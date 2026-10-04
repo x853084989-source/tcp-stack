@@ -1,0 +1,22 @@
+# 编译产物
+**/build/
+*.o
+*.a
+*.so
+*.map
+*.d
+
+# 抓包与日志
+*.pcap
+*.pcapng
+*.log
+
+# 崩溃转储
+core
+core.*
+
+# 编辑器文件
+*~
+*.swp
+.idea/
+.vscode/
