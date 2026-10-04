@@ -243,7 +243,7 @@ int main(int argc, char *argv[]) {
 
 			struct rte_ether_hdr *ehdr = rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr*);
 
-#if ENABLE_ARP
+#if ENABLE_AR
 
 			if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
 
