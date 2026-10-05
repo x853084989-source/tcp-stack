@@ -243,7 +243,7 @@ int main(int argc, char *argv[]) {
 
 			struct rte_ether_hdr *ehdr = rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr*);
 
-#if ENABLE_AR
+#if ENABLE_ARP
 
 			if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
 
@@ -301,7 +301,7 @@ int main(int argc, char *argv[]) {
 
 #endif
 
-				uint16_t length = ntohs(udphdr->dgram_len);
+				uint16_t length = ntohs(udphdr->dgram_len) - sizeof(struct rte_udp_hdr);
 				*((char*)udphdr + length) = '\0';
 
 				struct in_addr addr;
