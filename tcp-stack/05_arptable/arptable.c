@@ -34,7 +34,7 @@
 
 #define MAKE_IPV4_ADDR(a, b, c, d) (a + (b<<8) + (c<<16) + (d<<24))
 
-static uint32_t gLocalIp = MAKE_IPV4_ADDR(192, 168, 0, 116);
+static uint32_t gLocalIp = MAKE_IPV4_ADDR(192, 168, 27, 8);
 
 static uint32_t gSrcIp; //
 static uint32_t gDstIp;
@@ -188,6 +188,7 @@ static int ng_encode_arp_pkt(uint8_t *msg, uint16_t opcode, uint8_t *dst_mac, ui
 	// 1 ethhdr
 	struct rte_ether_hdr *eth = (struct rte_ether_hdr *)msg;
 	rte_memcpy(eth->s_addr.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
+
 	if (!strncmp((const char *)dst_mac, (const char *)gDefaultArpMac, RTE_ETHER_ADDR_LEN)) {
 		uint8_t mac[RTE_ETHER_ADDR_LEN] = {0x0};
 		rte_memcpy(eth->d_addr.addr_bytes, mac, RTE_ETHER_ADDR_LEN);
@@ -338,15 +339,6 @@ arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim,
 	   void *arg) {
 
 	struct rte_mempool *mbuf_pool = (struct rte_mempool *)arg;
-
-#if 0
-	struct rte_mbuf *arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, ahdr->arp_data.arp_sha.addr_bytes, 
-		ahdr->arp_data.arp_tip, ahdr->arp_data.arp_sip);
-
-	rte_eth_tx_burst(gDpdkPortId, 0, &arpbuf, 1);
-	rte_pktmbuf_free(arpbuf);
-
-#endif
 	
 	int i = 0;
 	for (i = 1;i <= 254;i ++) {
@@ -361,11 +353,11 @@ arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim,
 		uint8_t *dstmac = ng_get_dst_macaddr(dstip);
 		if (dstmac == NULL) {
 
-			arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, gDefaultArpMac, gLocalIp, dstip);
+			arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, gDefaultArpMac, gLocalIp, dstip); // ARP table dont have dstmac, send arp request
 		
 		} else {
 
-			arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, dstmac, gLocalIp, dstip);
+			arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, dstmac, gLocalIp, dstip); // ARP table have dstmac, send arp request
 		}
 
 		rte_eth_tx_burst(gDpdkPortId, 0, &arpbuf, 1);
@@ -394,7 +386,7 @@ int main(int argc, char *argv[]) {
 	ng_init_port(mbuf_pool);
 
 	rte_eth_macaddr_get(gDpdkPortId, (struct rte_ether_addr *)gSrcMac);
-
+	
 #if ENABLE_TIMER
 
 	rte_timer_subsystem_init();

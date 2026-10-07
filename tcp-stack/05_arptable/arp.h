@@ -57,9 +57,11 @@ static struct  arp_table *arp_table_instance(void) {
 	if (arpt == NULL) {
 
 		arpt = rte_malloc("arp table", sizeof(struct  arp_table), 0);
+		
 		if (arpt == NULL) {
 			rte_exit(EXIT_FAILURE, "rte_malloc arp table failed\n");
 		}
+		
 		memset(arpt, 0, sizeof(struct  arp_table));
 	}
 

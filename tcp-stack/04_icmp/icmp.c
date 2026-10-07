@@ -382,7 +382,7 @@ int main(int argc, char *argv[]) {
 
 #endif
 
-				uint16_t length = ntohs(udphdr->dgram_len);
+				uint16_t length = ntohs(udphdr->dgram_len) - sizeof(struct rte_udp_hdr);
 				*((char*)udphdr + length) = '\0';
 
 				struct in_addr addr;
