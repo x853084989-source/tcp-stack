@@ -84,3 +84,35 @@ struct rte_mbuf *send_arp(struct rte_mempool *mbuf_pool, uint16_t opcode, uint8_
 
 	return mbuf;
 }
+
+
+static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg) {
+
+	struct rte_mempool *mbuf_pool = (struct rte_mempool *)arg;
+	
+	int i = 0;
+	for (i = 1;i <= 254;i ++) {
+
+		uint32_t dstip = (local_host_ip & 0x00FFFFFF) | (0xFF000000 & (i << 24));
+
+		struct in_addr addr;
+		addr.s_addr = dstip;
+		printf("arp ---> src: %s \n", inet_ntoa(addr));
+
+		struct rte_mbuf *arpbuf = NULL;
+		uint8_t *dstmac = ng_get_dst_macaddr(dstip);
+		if (dstmac == NULL) {
+
+			arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, BroadcastArpMac, local_host_ip, dstip); // ARP table dont have dstmac, send arp request
+		
+		} else {
+
+			arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, dstmac, local_host_ip, dstip); // ARP table have dstmac, send arp request
+		}
+
+		rte_eth_tx_burst(DPDK_PORT_ID, 0, &arpbuf, 1);
+		rte_pktmbuf_free(arpbuf);
+		
+	}
+	
+}

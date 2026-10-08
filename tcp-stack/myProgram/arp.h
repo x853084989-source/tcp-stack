@@ -22,6 +22,7 @@
 	item->prev = item->next = NULL;			\
 } while(0)
 
+#define TIMER_RESOLUTION_CYCLES 120000000000ULL // 10ms * 1000 = 10s * 6 
 
 struct arp_table_item {
 
@@ -53,4 +54,5 @@ uint8_t *get_dst_macaddr(uint32_t dip);
 
 struct rte_mbuf *send_arp(struct rte_mempool *mbuf_pool, uint16_t opcode, uint8_t *dst_mac, uint32_t sip, uint32_t dip);
 
+static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg);
 #endif
