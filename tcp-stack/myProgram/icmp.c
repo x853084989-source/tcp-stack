@@ -1,82 +1,115 @@
-#include "main.h"
+#include "icmp.h"
+
+#include <arpa/inet.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#include <rte_eal.h>
+#include <rte_ethdev.h>
+#include <rte_icmp.h>
+#include <rte_memcpy.h>
+
+#include "app_state.h"
+#include "config.h"
 
 static uint16_t checksum(uint16_t *addr, int count) {
+    register long sum = 0;
 
-	register long sum = 0;
+    while (count > 1) {
+        sum += *(unsigned short *)addr++;
+        count -= 2;
+    }
 
-	while (count > 1) {
+    if (count > 0) {
+        sum += *(unsigned char *)addr;
+    }
 
-		sum += *(unsigned short*)addr++;
-		count -= 2;
-	
-	}
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
 
-	if (count > 0) {
-		sum += *(unsigned char *)addr;
-	}
-
-	while (sum >> 16) {
-		sum = (sum & 0xffff) + (sum >> 16);
-	}
-
-	return ~sum;
+    return ~sum;
 }
 
-static int encode_icmp_pkt(uint8_t *msg, uint8_t *dst_mac,
-		uint32_t sip, uint32_t dip, uint16_t id, uint16_t seqnb) {
+static int encode_icmp_pkt(uint8_t *msg, uint8_t *dst_mac, uint32_t sip, uint32_t dip, uint16_t id,
+                           uint16_t seqnb) {
+    // 1 ether
+    struct rte_ether_hdr *eth = (struct rte_ether_hdr *)msg;
+    rte_memcpy(eth->s_addr.addr_bytes, src_mac, RTE_ETHER_ADDR_LEN);
+    rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+    eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);
 
-	// 1 ether
-	struct rte_ether_hdr *eth = (struct rte_ether_hdr *)msg;
-	rte_memcpy(eth->s_addr.addr_bytes, src_mac, RTE_ETHER_ADDR_LEN);
-	rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
-	eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+    // 2 ip
+    struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(msg + sizeof(struct rte_ether_hdr));
+    ip->version_ihl = 0x45;
+    ip->type_of_service = 0;
+    ip->total_length = htons(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr));
+    ip->packet_id = 0;
+    ip->fragment_offset = 0;
+    ip->time_to_live = 64; // ttl = 64
+    ip->next_proto_id = IPPROTO_ICMP;
+    ip->src_addr = sip;
+    ip->dst_addr = dip;
 
-	// 2 ip
-	struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(msg + sizeof(struct rte_ether_hdr));
-	ip->version_ihl = 0x45;
-	ip->type_of_service = 0;
-	ip->total_length = htons(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr));
-	ip->packet_id = 0;
-	ip->fragment_offset = 0;
-	ip->time_to_live = 64; // ttl = 64
-	ip->next_proto_id = IPPROTO_ICMP;
-	ip->src_addr = sip;
-	ip->dst_addr = dip;
-	
-	ip->hdr_checksum = 0;
-	ip->hdr_checksum = rte_ipv4_cksum(ip);
+    ip->hdr_checksum = 0;
+    ip->hdr_checksum = rte_ipv4_cksum(ip);
 
-	// 3 icmp 
-	struct rte_icmp_hdr *icmp = (struct rte_icmp_hdr *)(msg + sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
-	icmp->icmp_type = RTE_IP_ICMP_ECHO_REPLY;
-	icmp->icmp_code = 0;
-	icmp->icmp_ident = id;
-	icmp->icmp_seq_nb = seqnb;
+    // 3 icmp
+    struct rte_icmp_hdr *icmp =
+        (struct rte_icmp_hdr *)(msg + sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+    icmp->icmp_type = RTE_IP_ICMP_ECHO_REPLY;
+    icmp->icmp_code = 0;
+    icmp->icmp_ident = id;
+    icmp->icmp_seq_nb = seqnb;
 
-	icmp->icmp_cksum = 0;
-	icmp->icmp_cksum = checksum((uint16_t*)icmp, sizeof(struct rte_icmp_hdr));
+    icmp->icmp_cksum = 0;
+    icmp->icmp_cksum = checksum((uint16_t *)icmp, sizeof(struct rte_icmp_hdr));
 
-	return 0;
+    return 0;
 }
 
+struct rte_mbuf *send_icmp(struct rte_mempool *mbuf_pool, uint8_t *dst_mac, uint32_t sip,
+                           uint32_t dip, uint16_t id, uint16_t seqnb) {
+    const unsigned total_length =
+        sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr);
 
-struct rte_mbuf *send_icmp(struct rte_mempool *mbuf_pool, uint8_t *dst_mac,
-		uint32_t sip, uint32_t dip, uint16_t id, uint16_t seqnb) {
+    struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
+    if (!mbuf) {
+        rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc\n");
+    }
 
-	const unsigned total_length = sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr);
+    mbuf->pkt_len = total_length;
+    mbuf->data_len = total_length;
 
-	struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
-	if (!mbuf) {
-		rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc\n");
-	}
+    uint8_t *pkt_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
+    encode_icmp_pkt(pkt_data, dst_mac, sip, dip, id, seqnb);
 
-	
-	mbuf->pkt_len = total_length;
-	mbuf->data_len = total_length;
+    return mbuf;
+}
 
-	uint8_t *pkt_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
-	encode_icmp_pkt(pkt_data, dst_mac, sip, dip, id, seqnb);
+void process_icmp_packet(struct rte_mempool *mbuf_pool, struct rte_mbuf *mbuf,
+                         struct rte_ether_hdr *ehdr, struct rte_ipv4_hdr *iphdr) {
+    int ret;
+    struct in_addr addr;
 
-	return mbuf;
+    struct rte_icmp_hdr *icmphdr = rte_pktmbuf_mtod_offset(
+        mbuf, struct rte_icmp_hdr *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
 
+    addr.s_addr = iphdr->src_addr;
+    printf(" Received ICMP message from source IP: %s\n", inet_ntoa(addr));
+
+    if (icmphdr->icmp_type == RTE_IP_ICMP_ECHO_REQUEST) {
+        struct rte_mbuf *icmp_reply_buf =
+            send_icmp(mbuf_pool, ehdr->s_addr.addr_bytes, iphdr->dst_addr, iphdr->src_addr,
+                      icmphdr->icmp_ident, icmphdr->icmp_seq_nb);
+
+        ret = rte_eth_tx_burst(DPDK_PORT_ID, 0, &icmp_reply_buf, 1);
+        if (ret != 0) {
+            printf(" ICMP reply sent to IP: %s]\n", inet_ntoa(addr));
+        } else {
+            rte_pktmbuf_free(icmp_reply_buf);
+            printf(" Failed to send ICMP reply]\n");
+        }
+    }
 }

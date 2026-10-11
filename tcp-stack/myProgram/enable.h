@@ -1,4 +1,0 @@
-#define ENABLE_SEND 1
-#define ENABLE_ARP_REQUEST 1
-#define ENABLE_ARP_REPLY 1
-#define ENABLE_ICMP 1
