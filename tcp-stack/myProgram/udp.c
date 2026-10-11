@@ -33,38 +33,37 @@ static int encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_len)
 	uint16_t udplen = total_len - sizeof(struct rte_ether_hdr) - sizeof(struct rte_ipv4_hdr);
 	udp->dgram_len = htons(udplen);
 
-	rte_memcpy((uint8_t*)(udp+1), data, udplen);
+	const uint16_t payload_len = udplen - sizeof(struct rte_udp_hdr);
+	rte_memcpy((uint8_t *)(udp + 1), data, payload_len);
 
 	udp->dgram_cksum = 0;
 	udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);
-
-	struct in_addr addr;
-	addr.s_addr = src_ip;
-	printf(" --> src: %s:%d, ", inet_ntoa(addr), ntohs(src_port));
-
-	addr.s_addr = dst_ip;
-	printf("dst: %s:%d\n", inet_ntoa(addr), ntohs(dst_port));
 
 	return 0;
 }
 
 
-static struct rte_mbuf * send_udp(struct rte_mempool *mbuf_pool, uint8_t *data, uint16_t length) {
+struct rte_mbuf *send_udp(struct rte_mempool *mbuf_pool, uint8_t *data, uint16_t length) {
 
 	// mempool --> mbuf
 
-	const unsigned total_len = length + 42;
+	const unsigned total_len = sizeof(struct rte_ether_hdr) +
+		sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr) + length;
+	if (total_len > UINT16_MAX) {
+		return NULL;
+	}
 
 	struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
 	if (!mbuf) {
-		rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc\n");
+		return NULL;
 	}
-	mbuf->pkt_len = total_len;
-	mbuf->data_len = total_len;
+	uint8_t *pktdata = (uint8_t *)rte_pktmbuf_append(mbuf, (uint16_t)total_len);
+	if (pktdata == NULL) {
+		rte_pktmbuf_free(mbuf);
+		return NULL;
+	}
 
-	uint8_t *pktdata = rte_pktmbuf_mtod(mbuf, uint8_t*);
-
-	encode_udp_pkt(pktdata, data, total_len);
+	encode_udp_pkt(pktdata, data, (uint16_t)total_len);
 
 	return mbuf;
 

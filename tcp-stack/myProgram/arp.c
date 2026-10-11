@@ -1,7 +1,9 @@
 #include "arp.h"
 
-static struct  arp_table *arpt = NULL;
+static uint8_t BroadcastArpMac[RTE_ETHER_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
+static struct  arp_table *arpt = NULL;
+static int count = 1;
 struct arp_table *arp_table_instance(void) {
 
 	if (arpt == NULL) {
@@ -86,32 +88,35 @@ struct rte_mbuf *send_arp(struct rte_mempool *mbuf_pool, uint16_t opcode, uint8_
 }
 
 
-static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg) {
+void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg) {
 
 	struct rte_mempool *mbuf_pool = (struct rte_mempool *)arg;
+	/* Build /24 targets in host byte order, then convert for ARP and lookup. */
+	const uint32_t subnet = ntohl(local_host_ip) & 0xFFFFFF00U;
 	
 	int i = 0;
+	printf("\nNotice:arp table is been searching: %d\n", count++);
 	for (i = 1;i <= 254;i ++) {
 
-		uint32_t dstip = (local_host_ip & 0x00FFFFFF) | (0xFF000000 & (i << 24));
+		uint32_t dstip = htonl(subnet | (uint32_t)i);
 
 		struct in_addr addr;
 		addr.s_addr = dstip;
-		printf("arp ---> src: %s \n", inet_ntoa(addr));
 
 		struct rte_mbuf *arpbuf = NULL;
-		uint8_t *dstmac = ng_get_dst_macaddr(dstip);
+		uint8_t *dstmac = get_dst_macaddr(dstip);
 		if (dstmac == NULL) {
 
-			arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, BroadcastArpMac, local_host_ip, dstip); // ARP table dont have dstmac, send arp request
+			arpbuf = send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, BroadcastArpMac, local_host_ip, dstip); // ARP table dont have dstmac, send arp request
 		
 		} else {
-
-			arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, dstmac, local_host_ip, dstip); // ARP table have dstmac, send arp request
+			printf("target ip and its mac address is searched in arp table successfully: %s \n", inet_ntoa(addr));
+			arpbuf = send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, dstmac, local_host_ip, dstip); // ARP table have dstmac, send arp request
 		}
 
-		rte_eth_tx_burst(DPDK_PORT_ID, 0, &arpbuf, 1);
-		rte_pktmbuf_free(arpbuf);
+		if (rte_eth_tx_burst(DPDK_PORT_ID, 0, &arpbuf, 1) == 0) {
+			rte_pktmbuf_free(arpbuf);
+		}
 		
 	}
 	

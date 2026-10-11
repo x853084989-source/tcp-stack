@@ -26,8 +26,10 @@ extern uint8_t dst_mac[RTE_ETHER_ADDR_LEN];
 extern uint16_t src_port;
 extern uint16_t dst_port;
 
-static uint8_t BroadcastArpMac[RTE_ETHER_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-
 int port_init(struct rte_mempool *mbuf_pool);
+
+struct rte_mbuf *send_udp(struct rte_mempool *mbuf_pool, uint8_t *data, uint16_t length);
+struct rte_mbuf *send_icmp(struct rte_mempool *mbuf_pool, uint8_t *dst_mac,
+                           uint32_t sip, uint32_t dip, uint16_t id, uint16_t seqnb);
 
 #endif

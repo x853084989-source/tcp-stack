@@ -3,6 +3,7 @@
 #include <rte_mbuf.h>
 #include <rte_malloc.h>
 #include <rte_timer.h>
+#include <rte_ip.h>
 #include <stdio.h>
 #include <arpa/inet.h>
 
@@ -16,7 +17,8 @@
 #define MAKE_IPV4_HOST_ADDR(a, b, c, d) ((a<<24) + (b<<16) + (c<<8) + (d))
 
 
-uint32_t local_host_ip = MAKE_IPV4_HOST_ADDR(192, 168, 27, 8);
+/* Keep the local IP in network byte order, like ARP packet fields. */
+uint32_t local_host_ip = RTE_BE32(RTE_IPV4(192U, 168U, 27U, 8U));
 uint32_t src_ip;
 uint32_t dst_ip;
 
@@ -55,6 +57,10 @@ int main(int argc, char* argv[]){
 
         for(int i = 0; i < num_recvd; i++){
 
+            if (rte_pktmbuf_data_len(mbufs[i]) < sizeof(struct rte_ether_hdr)) {
+                rte_pktmbuf_free(mbufs[i]);
+                continue;
+            }
             struct rte_ether_hdr* ehdr = rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr*);
 
             if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)){
@@ -63,12 +69,11 @@ int main(int argc, char* argv[]){
                 if(ahdr ->arp_data.arp_tip == local_host_ip){
                 struct in_addr addr;
                 addr.s_addr = ahdr->arp_data.arp_tip;
-                printf("Received ARP message to local IP: %s\n", inet_ntoa(addr));
+                printf("[Received ARP message to local IP: %s\n", inet_ntoa(addr));
 
                 if(ahdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)){
                     addr.s_addr = ahdr->arp_data.arp_sip;
-                    printf("Received ARP request\n");
-                    printf("ARP request from IP: %s\n", inet_ntoa(addr));
+                    printf(" Received ARP request from IP: %s\n", inet_ntoa(addr));
                     // ARP reply
                     // check table
                     
@@ -78,16 +83,16 @@ int main(int argc, char* argv[]){
                     ret = rte_eth_tx_burst(DPDK_PORT_ID, 0, &arp_reply_buf, 1);
 
                     if(ret != 0){
-                        printf("ARP reply sent to IP: %s\n", inet_ntoa(addr));
-                        rte_pktmbuf_free(arp_reply_buf);
+                        printf(" ARP reply sent to IP: %s ] \n", inet_ntoa(addr));
                     } else {
-                        printf("Failed to send ARP reply\n");
+                        rte_pktmbuf_free(arp_reply_buf);
+                        printf(" Failed to send ARP reply ]\n");
                     }
 
                 }else if (ahdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)){
                         addr.s_addr = ahdr->arp_data.arp_sip;
-                        printf("Received ARP reply\n");
-                        printf("ARP reply from IP: %s\n", inet_ntoa(addr));
+                        printf(" Received ARP reply: ");
+                        printf(" ARP reply from IP: %s]\n", inet_ntoa(addr));
                         // save in ARP table
                         struct arp_table* table = arp_table_instance();
                         uint8_t* mac_addr = get_dst_macaddr(ahdr->arp_data.arp_sip);
@@ -109,7 +114,10 @@ int main(int argc, char* argv[]){
                                 addr.s_addr = iter->ip;
 
                                 if(iter->ip == ahdr->arp_data.arp_sip){
-                                    printf("ARP table have been added, IP:%s, MAC: %s\n", inet_ntoa(addr), ether_addr_to_str((struct rte_ether_addr *)iter->mac_addr));
+                                    char mac_str[32];
+                                    rte_ether_format_addr(mac_str, sizeof(mac_str),
+                                        (const struct rte_ether_addr *)iter->mac_addr);
+                                    printf("Notice: ARP table have been added, IP:%s, MAC: %s ] \n", inet_ntoa(addr), mac_str);
                                     break;
                                 }
                             }   
@@ -117,21 +125,46 @@ int main(int argc, char* argv[]){
 
                         }
                     }
+                }
             }
-                
 
-
-            
             if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)){
+                if (rte_pktmbuf_data_len(mbufs[i]) <
+                    sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr)) {
+                    rte_pktmbuf_free(mbufs[i]);
+                    continue;
+                }
                 struct rte_ipv4_hdr* iphdr = rte_pktmbuf_mtod_offset(mbufs[i], struct rte_ipv4_hdr*, sizeof(struct rte_ether_hdr));
                 struct in_addr addr;
                 addr.s_addr = iphdr->src_addr;
-                printf("Received IPv4 message from source IP: %s\n", inet_ntoa(addr));
+                printf("[Received IPv4 message from source IP: %s\n", inet_ntoa(addr));
 
 
                 if(iphdr->next_proto_id == IPPROTO_UDP){
-                    struct rte_udp_hdr* udphdr = 
-                    rte_pktmbuf_mtod_offset(mbufs[i], struct rte_udp_hdr*, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+                    const uint16_t ip_hdr_len = (iphdr->version_ihl & 0x0f) * 4;
+                    const uint16_t ip_len = ntohs(iphdr->total_length);
+                    const uint16_t frag_off = ntohs(iphdr->fragment_offset);
+
+                    /* This echo path requires a complete, contiguous UDP datagram. */
+                    if (!rte_pktmbuf_is_contiguous(mbufs[i]) ||
+                        (iphdr->version_ihl >> 4) != 4 ||
+                        ip_hdr_len < sizeof(struct rte_ipv4_hdr) ||
+                        ip_len < ip_hdr_len + sizeof(struct rte_udp_hdr) ||
+                        ip_len > rte_pktmbuf_pkt_len(mbufs[i]) - sizeof(struct rte_ether_hdr) ||
+                        (frag_off & (RTE_IPV4_HDR_MF_FLAG | RTE_IPV4_HDR_OFFSET_MASK)) != 0) {
+                        rte_pktmbuf_free(mbufs[i]);
+                        continue;
+                    }
+
+                    struct rte_udp_hdr* udphdr = rte_pktmbuf_mtod_offset(
+                        mbufs[i], struct rte_udp_hdr*, sizeof(struct rte_ether_hdr) + ip_hdr_len);
+                    const uint16_t udp_len = ntohs(udphdr->dgram_len);
+                    if (udp_len < sizeof(struct rte_udp_hdr) || udp_len > ip_len - ip_hdr_len) {
+                        rte_pktmbuf_free(mbufs[i]);
+                        continue;
+                    }
+                    const uint16_t payload_len = udp_len - sizeof(struct rte_udp_hdr);
+                    uint8_t *payload = (uint8_t *)(udphdr + 1);
 
                     rte_memcpy(&dst_mac, ehdr->s_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
                     
@@ -144,13 +177,18 @@ int main(int argc, char* argv[]){
                     
 
                     struct rte_mbuf* udp_reply_buf = 
-                    send_udp(mbuf_pool, ((uint8_t*)udphdr + 1), ntohs(udphdr->dgram_len) - sizeof(struct rte_udp_hdr));
+                    send_udp(mbuf_pool, payload, payload_len);
+                    if (udp_reply_buf == NULL) {
+                        printf(" Failed to allocate UDP reply buffer]\n");
+                        rte_pktmbuf_free(mbufs[i]);
+                        continue;
+                    }
                     ret = rte_eth_tx_burst(DPDK_PORT_ID, 0, &udp_reply_buf, 1);
                     if(ret != 0){
-                        printf("UDP reply sent to IP: %s\n", inet_ntoa(addr));
-                        rte_pktmbuf_free(udp_reply_buf);
+                        printf(" UDP reply sent to IP: %s]\n", inet_ntoa(addr));
                     } else {
-                        printf("Failed to send UDP reply\n");
+                        rte_pktmbuf_free(udp_reply_buf);
+                        printf(" Failed to send UDP reply]\n");
                     }
                 }
 
@@ -159,7 +197,7 @@ int main(int argc, char* argv[]){
                     rte_pktmbuf_mtod_offset(mbufs[i], struct rte_icmp_hdr*, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
 
                     addr.s_addr = iphdr->src_addr;
-                    printf("Received ICMP message from source IP: %s\n", inet_ntoa(addr));
+                    printf(" Received ICMP message from source IP: %s\n", inet_ntoa(addr));
                     
                     if (icmphdr->icmp_type == RTE_IP_ICMP_ECHO_REQUEST) {
 
@@ -168,10 +206,10 @@ int main(int argc, char* argv[]){
 
 					ret = rte_eth_tx_burst(DPDK_PORT_ID, 0, &icmp_reply_buf, 1);
                         if(ret != 0){
-                            printf("ICMP reply sent to IP: %s\n", inet_ntoa(addr));
-                            rte_pktmbuf_free(icmp_reply_buf);
+                            printf(" ICMP reply sent to IP: %s]\n", inet_ntoa(addr));
                         } else {
-                            printf("Failed to send ICMP reply\n");
+                            rte_pktmbuf_free(icmp_reply_buf);
+                            printf(" Failed to send ICMP reply]\n");
                         }
                     
 				    }
@@ -182,6 +220,16 @@ int main(int argc, char* argv[]){
 
             rte_pktmbuf_free(mbufs[i]);
         }
+
+        static uint64_t prev_tsc = 0, cur_tsc;
+		uint64_t diff_tsc;
+
+		cur_tsc = rte_rdtsc();
+		diff_tsc = cur_tsc - prev_tsc;
+		if (diff_tsc > TIMER_RESOLUTION_CYCLES) {
+			rte_timer_manage();
+			prev_tsc = cur_tsc;
+		}
     }
 }
 

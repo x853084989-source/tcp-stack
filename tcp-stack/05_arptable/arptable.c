@@ -563,7 +563,7 @@ int main(int argc, char *argv[]) {
 			
 		}
 
-#if ENABLE_TIMER
+
 
 		static uint64_t prev_tsc = 0, cur_tsc;
 		uint64_t diff_tsc;
@@ -575,7 +575,7 @@ int main(int argc, char *argv[]) {
 			prev_tsc = cur_tsc;
 		}
 
-#endif
+
 
 
 	}
