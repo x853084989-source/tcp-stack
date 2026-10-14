@@ -7,12 +7,12 @@
 #include <string.h>
 
 #include <rte_eal.h>
-#include <rte_ethdev.h>
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 
 #include "app_state.h"
 #include "config.h"
+#include "net_arch.h"
 
 #define LL_ADD(item, list)                                                                         \
     do {                                                                                           \
@@ -141,9 +141,7 @@ void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *a
                               dstip); // ARP table have dstmac, send arp request
         }
 
-        if (rte_eth_tx_burst(DPDK_PORT_ID, 0, &arpbuf, 1) == 0) {
-            rte_pktmbuf_free(arpbuf);
-        }
+        queue_tx_packet(arpbuf);
     }
 }
 
@@ -164,13 +162,12 @@ void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *ahdr)
                 send_arp(mbuf_pool, RTE_ARP_OP_REPLY, ahdr->arp_data.arp_sha.addr_bytes,
                          ahdr->arp_data.arp_tip, ahdr->arp_data.arp_sip);
 
-            ret = rte_eth_tx_burst(DPDK_PORT_ID, 0, &arp_reply_buf, 1);
+            ret = queue_tx_packet(arp_reply_buf);
 
-            if (ret != 0) {
-                printf(" ARP reply sent to IP: %s ] \n", inet_ntoa(addr));
+            if (ret == 0) {
+                printf(" ARP reply queued for IP: %s ] \n", inet_ntoa(addr));
             } else {
-                rte_pktmbuf_free(arp_reply_buf);
-                printf(" Failed to send ARP reply ]\n");
+                printf(" Failed to queue ARP reply ]\n");
             }
         } else if (ahdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
             addr.s_addr = ahdr->arp_data.arp_sip;
@@ -201,7 +198,7 @@ void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *ahdr)
                         char mac_str[32];
                         rte_ether_format_addr(mac_str, sizeof(mac_str),
                                               (const struct rte_ether_addr *)iter->mac_addr);
-                        printf("Notice: ARP table have been added, IP:%s, MAC: %s ] \n",
+                        printf("\nNotice: ARP table have been added, IP:%s, MAC: %s\n",
                                inet_ntoa(addr), mac_str);
                         break;
                     }

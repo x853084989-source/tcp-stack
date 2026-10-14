@@ -6,12 +6,12 @@
 #include <stdlib.h>
 
 #include <rte_eal.h>
-#include <rte_ethdev.h>
 #include <rte_icmp.h>
 #include <rte_memcpy.h>
 
 #include "app_state.h"
 #include "config.h"
+#include "net_arch.h"
 
 static uint16_t checksum(uint16_t *addr, int count) {
     register long sum = 0;
@@ -104,12 +104,11 @@ void process_icmp_packet(struct rte_mempool *mbuf_pool, struct rte_mbuf *mbuf,
             send_icmp(mbuf_pool, ehdr->s_addr.addr_bytes, iphdr->dst_addr, iphdr->src_addr,
                       icmphdr->icmp_ident, icmphdr->icmp_seq_nb);
 
-        ret = rte_eth_tx_burst(DPDK_PORT_ID, 0, &icmp_reply_buf, 1);
-        if (ret != 0) {
-            printf(" ICMP reply sent to IP: %s]\n", inet_ntoa(addr));
+        ret = queue_tx_packet(icmp_reply_buf);
+        if (ret == 0) {
+            printf(" ICMP reply queued for IP: %s]\n", inet_ntoa(addr));
         } else {
-            rte_pktmbuf_free(icmp_reply_buf);
-            printf(" Failed to send ICMP reply]\n");
+            printf(" Failed to queue ICMP reply]\n");
         }
     }
 }

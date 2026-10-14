@@ -1,7 +1,7 @@
+#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 
-#include <rte_cycles.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
 #include <rte_lcore.h>
@@ -12,8 +12,17 @@
 #include "app_state.h"
 #include "arp.h"
 #include "config.h"
+#include "net_arch.h"
 #include "packet.h"
 #include "port_init.h"
+#include "udp_app.h"
+
+#if ENABLE_UDP_APP
+static void *run_udp_application(void *arg) {
+    udp_server_entry(arg);
+    return NULL;
+}
+#endif
 
 int main(int argc, char *argv[]) {
     int ret = rte_eal_init(argc, argv);
@@ -21,42 +30,50 @@ int main(int argc, char *argv[]) {
         rte_exit(EXIT_FAILURE, "Error with EAL init\n");
     }
 
+    unsigned required_lcores = 2;
+    if (rte_lcore_count() < required_lcores) {
+        rte_exit(EXIT_FAILURE, "This configuration needs at least %u enabled lcores\n",
+                 required_lcores);
+    }
+    unsigned protocol_lcore = rte_get_next_lcore(-1, 1, 0);
+
     struct rte_mempool *mbuf_pool = rte_pktmbuf_pool_create(
         "mbuf pool", NUM_MBUFS, 0, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
     if (mbuf_pool == NULL) {
         rte_exit(EXIT_FAILURE, "Could not create mbuf pool\n");
     }
 
+    if (net_arch_init() != 0) {
+        rte_exit(EXIT_FAILURE, "Could not create packet rings\n");
+    }
     port_init(mbuf_pool);
+    rte_eth_macaddr_get(DPDK_PORT_ID, (struct rte_ether_addr *)src_mac);
     rte_timer_subsystem_init();
 
     struct rte_timer arp_timer;
     rte_timer_init(&arp_timer);
-
-    uint64_t hz = rte_get_timer_hz();
-    unsigned lcore_id = rte_lcore_id();
-    rte_timer_reset(&arp_timer, hz, PERIODICAL, lcore_id, arp_request_timer_cb, mbuf_pool);
-
-    rte_eth_macaddr_get(DPDK_PORT_ID, (struct rte_ether_addr *)src_mac);
-
-    while (1) {
-        struct rte_mbuf *mbufs[BURST_SIZE];
-        int num_recvd = rte_eth_rx_burst(DPDK_PORT_ID, 0, mbufs, BURST_SIZE);
-        if (num_recvd > BURST_SIZE) {
-            rte_exit(EXIT_FAILURE, "Error receiving from eth\n");
-        }
-
-        process_packets(mbuf_pool, mbufs, num_recvd);
-
-        static uint64_t prev_tsc = 0;
-        static uint64_t cur_tsc;
-        uint64_t diff_tsc;
-
-        cur_tsc = rte_rdtsc();
-        diff_tsc = cur_tsc - prev_tsc;
-        if (diff_tsc > TIMER_RESOLUTION_CYCLES) {
-            rte_timer_manage();
-            prev_tsc = cur_tsc;
-        }
+    /* The ARP table, lookup and timer callback have one protocol-lcore owner. */
+    ret = rte_timer_reset(&arp_timer, rte_get_timer_hz(), PERIODICAL, protocol_lcore,
+                          arp_request_timer_cb, mbuf_pool);
+    if (ret != 0) {
+        rte_exit(EXIT_FAILURE, "Could not start ARP timer\n");
     }
+
+    ret = rte_eal_remote_launch(packet_worker, mbuf_pool, protocol_lcore);
+    if (ret != 0) {
+        rte_exit(EXIT_FAILURE, "Could not launch protocol lcore\n");
+    }
+
+#if ENABLE_UDP_APP
+    /* A blocking application thread can share a CPU on a two-vCPU VM. */
+    pthread_t app_thread;
+    ret = pthread_create(&app_thread, NULL, run_udp_application, NULL);
+    if (ret != 0) {
+        rte_exit(EXIT_FAILURE, "Could not launch UDP application thread: %d\n", ret);
+    }
+    pthread_detach(app_thread);
+#endif
+
+    printf("Packet I/O lcore: %u, protocol lcore: %u\n", rte_lcore_id(), protocol_lcore);
+    return io_worker(NULL);
 }

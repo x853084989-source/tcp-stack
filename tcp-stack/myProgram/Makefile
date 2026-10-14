@@ -11,7 +11,10 @@ SRCS-y := main.c \
           icmp.c \
           port_init.c \
           app_state.c \
-          packet.c
+          packet.c \
+          net_arch.c \
+          udp_socket.c \
+          udp_app.c
 
 # Build using pkg-config variables if possible
 ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)
@@ -26,10 +29,10 @@ static: build/$(APP)-static
 PKGCONF=pkg-config --define-prefix
 
 PC_FILE := $(shell $(PKGCONF) --path libdpdk)
-CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
+CFLAGS += -O3 -pthread $(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
-LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk)
-LDFLAGS_STATIC = -Wl,-Bstatic $(shell $(PKGCONF) --static --libs libdpdk)
+LDFLAGS_SHARED = -pthread $(shell $(PKGCONF) --libs libdpdk)
+LDFLAGS_STATIC = -pthread -Wl,-Bstatic $(shell $(PKGCONF) --static --libs libdpdk)
 
 build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
@@ -61,9 +64,11 @@ $(error This application can only operate in a linux environment, \
 please change the definition of the RTE_TARGET environment variable)
 endif
 
-CFLAGS += -O3
+CFLAGS += -O3 -pthread
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += $(WERROR_FLAGS)
+
+LDLIBS += -lpthread
 
 include $(RTE_SDK)/mk/rte.extapp.mk
 endif
