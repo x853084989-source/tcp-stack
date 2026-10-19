@@ -8,11 +8,12 @@
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 
-struct rte_mbuf *send_icmp(struct rte_mempool *mbuf_pool, uint8_t *dst_mac, uint32_t sip,
-                           uint32_t dip, uint16_t id, uint16_t seqnb);
+struct rte_mbuf *build_icmp_packet(struct rte_mempool *mbuf_pool, uint8_t *destination_mac,
+                                   uint32_t source_ip, uint32_t destination_ip, uint16_t id,
+                                   uint16_t seqnb);
 
 /* Borrows mbuf and its headers; process_packets() releases the received mbuf. */
 void process_icmp_packet(struct rte_mempool *mbuf_pool, struct rte_mbuf *mbuf,
-                         struct rte_ether_hdr *ehdr, struct rte_ipv4_hdr *iphdr);
+                         struct rte_ether_hdr *ethernet_header, struct rte_ipv4_hdr *ipv4_header);
 
 #endif /* MYPROGRAM_ICMP_H */

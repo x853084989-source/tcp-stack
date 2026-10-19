@@ -37,8 +37,6 @@ int port_init(struct rte_mempool *mbuf_pool) {
         rte_exit(EXIT_FAILURE, "Could not setup RX queue\n");
     }
 
-#if ENABLE_SEND
-
     struct rte_eth_txconf txq_conf = dev_info.default_txconf;
     txq_conf.offloads = port_conf.rxmode.offloads;
 
@@ -47,8 +45,6 @@ int port_init(struct rte_mempool *mbuf_pool) {
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "Could not setup TX queue\n");
     }
-
-#endif
 
     ret = rte_eth_dev_start(DPDK_PORT_ID);
     if (ret < 0) {

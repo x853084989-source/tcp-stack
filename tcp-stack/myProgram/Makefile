@@ -3,18 +3,26 @@
 
 # binary name
 APP = myProgram
+.DEFAULT_GOAL := all
+
+# Resolve shared headers from the project root in both build systems.
+PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
 # all source are stored in SRCS-y
 SRCS-y := main.c \
-          arp.c \
-          udp.c \
-          icmp.c \
-          port_init.c \
-          app_state.c \
-          packet.c \
-          net_arch.c \
-          udp_socket.c \
-          udp_app.c
+          protocol/arp.c \
+          protocol/udp.c \
+          protocol/icmp.c \
+          protocol/tcp.c \
+          common/port_init.c \
+          common/app_state.c \
+          common/packet.c \
+          common/net_arch.c \
+          socket/udp_socket.c \
+          socket/tcp_socket.c \
+          socket/socket_api.c \
+          app/udp_app.c \
+          app/tcp_app.c
 
 # Build using pkg-config variables if possible
 ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)
@@ -29,7 +37,7 @@ static: build/$(APP)-static
 PKGCONF=pkg-config --define-prefix
 
 PC_FILE := $(shell $(PKGCONF) --path libdpdk)
-CFLAGS += -O3 -pthread $(shell $(PKGCONF) --cflags libdpdk)
+CFLAGS += -O3 -pthread -I$(PROJECT_ROOT) $(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 LDFLAGS_SHARED = -pthread $(shell $(PKGCONF) --libs libdpdk)
 LDFLAGS_STATIC = -pthread -Wl,-Bstatic $(shell $(PKGCONF) --static --libs libdpdk)
@@ -64,7 +72,7 @@ $(error This application can only operate in a linux environment, \
 please change the definition of the RTE_TARGET environment variable)
 endif
 
-CFLAGS += -O3 -pthread
+CFLAGS += -O3 -pthread -I$(PROJECT_ROOT)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += $(WERROR_FLAGS)
 

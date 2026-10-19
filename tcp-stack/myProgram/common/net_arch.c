@@ -8,7 +8,7 @@
 
 static struct inout_ring packet_rings;
 
-struct inout_ring *ring_instance(void) {
+struct inout_ring *packet_rings_instance(void) {
     return &packet_rings;
 }
 

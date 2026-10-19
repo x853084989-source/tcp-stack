@@ -10,7 +10,7 @@ struct inout_ring {
 };
 
 int net_arch_init(void);
-struct inout_ring *ring_instance(void);
+struct inout_ring *packet_rings_instance(void);
 
 /* Consumes mbuf: queues it on success, frees it on failure. */
 int queue_tx_packet(struct rte_mbuf *mbuf);

@@ -11,20 +11,20 @@
 #include <rte_memcpy.h>
 #include <rte_ring.h>
 
-#include "app_state.h"
+#include "common/app_state.h"
 #include "config.h"
-#include "udp.h"
+#include "protocol/udp.h"
 
 struct udp_socket {
     int fd;
-    uint32_t localip;
-    uint16_t localport;
+    uint32_t local_ip;
+    uint16_t local_port;
     int bound;
     int closing;
     unsigned references;
 
-    struct rte_ring *rcvbuf;
-    struct rte_ring *sndbuf;
+    struct rte_ring *receive_queue;
+    struct rte_ring *send_queue;
     pthread_mutex_t mutex;
     pthread_cond_t cond;
     struct udp_socket *next;
@@ -36,38 +36,38 @@ static pthread_mutex_t socket_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void free_datagram(struct udp_datagram *datagram) {
     if (datagram != NULL) {
-        rte_free(datagram->data);
+        rte_free(datagram->payload);
         rte_free(datagram);
     }
 }
 
-static struct udp_datagram *create_datagram(const void *data, size_t length) {
+static struct udp_datagram *create_datagram(const void *payload, size_t payload_length) {
     struct udp_datagram *datagram = rte_zmalloc("udp_datagram", sizeof(*datagram), 0);
     if (datagram == NULL) {
         return NULL;
     }
-    if (length != 0) {
-        datagram->data = rte_malloc("udp_payload", length, 0);
-        if (datagram->data == NULL) {
+    if (payload_length != 0) {
+        datagram->payload = rte_malloc("udp_payload", payload_length, 0);
+        if (datagram->payload == NULL) {
             rte_free(datagram);
             return NULL;
         }
-        rte_memcpy(datagram->data, data, length);
+        rte_memcpy(datagram->payload, payload, payload_length);
     }
-    datagram->length = (uint16_t)length;
+    datagram->payload_length = (uint16_t)payload_length;
     return datagram;
 }
 
 static void destroy_socket(struct udp_socket *socket) {
     struct udp_datagram *datagram;
-    while (rte_ring_dequeue(socket->rcvbuf, (void **)&datagram) == 0) {
+    while (rte_ring_dequeue(socket->receive_queue, (void **)&datagram) == 0) {
         free_datagram(datagram);
     }
-    while (rte_ring_dequeue(socket->sndbuf, (void **)&datagram) == 0) {
+    while (rte_ring_dequeue(socket->send_queue, (void **)&datagram) == 0) {
         free_datagram(datagram);
     }
-    rte_ring_free(socket->rcvbuf);
-    rte_ring_free(socket->sndbuf);
+    rte_ring_free(socket->receive_queue);
+    rte_ring_free(socket->send_queue);
     pthread_cond_destroy(&socket->cond);
     pthread_mutex_destroy(&socket->mutex);
     rte_free(socket);
@@ -113,8 +113,8 @@ static struct udp_socket *acquire_bound_socket(uint32_t ip, uint16_t port) {
     pthread_mutex_lock(&socket_list_mutex);
     struct udp_socket *socket;
     for (socket = socket_list; socket != NULL; socket = socket->next) {
-        if (!socket->closing && socket->bound && socket->localport == port &&
-            (socket->localip == ip || socket->localip == htonl(INADDR_ANY))) {
+        if (!socket->closing && socket->bound && socket->local_port == port &&
+            (socket->local_ip == ip || socket->local_ip == htonl(INADDR_ANY))) {
             socket->references++;
             break;
         }
@@ -123,7 +123,7 @@ static struct udp_socket *acquire_bound_socket(uint32_t ip, uint16_t port) {
     return socket;
 }
 
-int nsocket(int domain, int type, int protocol) {
+int udp_socket_create(int domain, int type, int protocol) {
     if (domain != AF_INET || type != SOCK_DGRAM || (protocol != 0 && protocol != IPPROTO_UDP)) {
         errno = EPROTONOSUPPORT;
         return -1;
@@ -165,10 +165,10 @@ int nsocket(int domain, int type, int protocol) {
     } else {
         char name[32];
         snprintf(name, sizeof(name), "myProgram_udp_rx_%d", socket->fd);
-        socket->rcvbuf = rte_ring_create(name, RING_SIZE, rte_socket_id(), 0);
+        socket->receive_queue = rte_ring_create(name, RING_SIZE, rte_socket_id(), 0);
         snprintf(name, sizeof(name), "myProgram_udp_tx_%d", socket->fd);
-        socket->sndbuf = rte_ring_create(name, RING_SIZE, rte_socket_id(), 0);
-        if (socket->rcvbuf == NULL || socket->sndbuf == NULL) {
+        socket->send_queue = rte_ring_create(name, RING_SIZE, rte_socket_id(), 0);
+        if (socket->receive_queue == NULL || socket->send_queue == NULL) {
             error = ENOMEM;
         } else {
             socket->next = socket_list;
@@ -178,11 +178,11 @@ int nsocket(int domain, int type, int protocol) {
     pthread_mutex_unlock(&socket_list_mutex);
 
     if (error != 0) {
-        if (socket->rcvbuf != NULL) {
-            rte_ring_free(socket->rcvbuf);
+        if (socket->receive_queue != NULL) {
+            rte_ring_free(socket->receive_queue);
         }
-        if (socket->sndbuf != NULL) {
-            rte_ring_free(socket->sndbuf);
+        if (socket->send_queue != NULL) {
+            rte_ring_free(socket->send_queue);
         }
         pthread_cond_destroy(&socket->cond);
         pthread_mutex_destroy(&socket->mutex);
@@ -193,22 +193,22 @@ int nsocket(int domain, int type, int protocol) {
     return socket->fd;
 }
 
-int nbind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
-    if (addr == NULL || addrlen < sizeof(struct sockaddr_in) || addr->sa_family != AF_INET) {
+int udp_socket_bind(int socket_fd, const struct sockaddr *addr, socklen_t address_length) {
+    if (addr == NULL || address_length < sizeof(struct sockaddr_in) || addr->sa_family != AF_INET) {
         errno = EINVAL;
         return -1;
     }
-    const struct sockaddr_in *localaddr = (const struct sockaddr_in *)addr;
-    if (localaddr->sin_port == 0) {
+    const struct sockaddr_in *local_address = (const struct sockaddr_in *)addr;
+    if (local_address->sin_port == 0) {
         errno = EINVAL; /* Automatic ephemeral-port assignment is not implemented. */
         return -1;
     }
-    if (localaddr->sin_addr.s_addr != local_host_ip &&
-        localaddr->sin_addr.s_addr != htonl(INADDR_ANY)) {
+    if (local_address->sin_addr.s_addr != local_host_ip &&
+        local_address->sin_addr.s_addr != htonl(INADDR_ANY)) {
         errno = EADDRNOTAVAIL;
         return -1;
     }
-    struct udp_socket *socket = acquire_socket(sockfd);
+    struct udp_socket *socket = acquire_socket(socket_fd);
     if (socket == NULL) {
         return -1;
     }
@@ -221,14 +221,14 @@ int nbind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     } else {
         for (struct udp_socket *iter = socket_list; iter != NULL; iter = iter->next) {
             if (iter != socket && !iter->closing && iter->bound &&
-                iter->localport == localaddr->sin_port) {
+                iter->local_port == local_address->sin_port) {
                 error = EADDRINUSE;
                 break;
             }
         }
         if (error == 0) {
-            socket->localip = localaddr->sin_addr.s_addr;
-            socket->localport = localaddr->sin_port;
+            socket->local_ip = local_address->sin_addr.s_addr;
+            socket->local_port = local_address->sin_port;
             socket->bound = 1;
         }
     }
@@ -242,9 +242,10 @@ int nbind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
     return 0;
 }
 
-ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr,
-                  socklen_t *addrlen) {
-    if ((buf == NULL && len != 0) || (src_addr != NULL && addrlen == NULL)) {
+ssize_t nrecvfrom(int socket_fd, void *buffer, size_t buffer_length, int flags,
+                  struct sockaddr *source_address, socklen_t *address_length) {
+    if ((buffer == NULL && buffer_length != 0) ||
+        (source_address != NULL && address_length == NULL)) {
         errno = EINVAL;
         return -1;
     }
@@ -252,7 +253,7 @@ ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr 
         errno = EOPNOTSUPP;
         return -1;
     }
-    struct udp_socket *socket = acquire_socket(sockfd);
+    struct udp_socket *socket = acquire_socket(socket_fd);
     if (socket == NULL) {
         return -1;
     }
@@ -261,7 +262,7 @@ ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr 
     struct udp_datagram *datagram = NULL;
     pthread_mutex_lock(&socket->mutex);
     while (!socket->closing && socket->bound &&
-           rte_ring_dequeue(socket->rcvbuf, (void **)&datagram) != 0) {
+           rte_ring_dequeue(socket->receive_queue, (void **)&datagram) != 0) {
         if ((flags & MSG_DONTWAIT) != 0) {
             error = EAGAIN;
             break;
@@ -280,18 +281,21 @@ ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr 
 
     ssize_t copied = -1;
     if (error == 0 && datagram != NULL) {
-        size_t count = len < datagram->length ? len : datagram->length;
+        size_t count =
+            buffer_length < datagram->payload_length ? buffer_length : datagram->payload_length;
         if (count != 0) {
-            rte_memcpy(buf, datagram->data, count);
+            rte_memcpy(buffer, datagram->payload, count);
         }
-        if (src_addr != NULL) {
-            struct sockaddr_in peer = {0};
-            peer.sin_family = AF_INET;
-            peer.sin_addr.s_addr = datagram->sip;
-            peer.sin_port = datagram->sport;
-            size_t addr_count = *addrlen < sizeof(peer) ? *addrlen : sizeof(peer);
-            rte_memcpy(src_addr, &peer, addr_count);
-            *addrlen = sizeof(peer);
+        if (source_address != NULL) {
+            struct sockaddr_in source_ipv4_address = {0};
+            source_ipv4_address.sin_family = AF_INET;
+            source_ipv4_address.sin_addr.s_addr = datagram->source_ip;
+            source_ipv4_address.sin_port = datagram->source_port;
+            size_t addr_count = *address_length < sizeof(source_ipv4_address)
+                                    ? *address_length
+                                    : sizeof(source_ipv4_address);
+            rte_memcpy(source_address, &source_ipv4_address, addr_count);
+            *address_length = sizeof(source_ipv4_address);
         }
         copied = (ssize_t)count;
     }
@@ -304,27 +308,28 @@ ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr 
     return copied;
 }
 
-ssize_t nsendto(int sockfd, const void *buf, size_t len, int flags,
-                const struct sockaddr *dest_addr, socklen_t addrlen) {
-    if ((buf == NULL && len != 0) || dest_addr == NULL || addrlen < sizeof(struct sockaddr_in) ||
-        dest_addr->sa_family != AF_INET) {
+ssize_t nsendto(int socket_fd, const void *payload, size_t payload_length, int flags,
+                const struct sockaddr *destination_address, socklen_t address_length) {
+    if ((payload == NULL && payload_length != 0) || destination_address == NULL ||
+        address_length < sizeof(struct sockaddr_in) || destination_address->sa_family != AF_INET) {
         errno = EINVAL;
         return -1;
     }
-    if (flags != 0 || len > UDP_MAX_PAYLOAD_SIZE) {
+    if (flags != 0 || payload_length > UDP_MAX_PAYLOAD_SIZE) {
         errno = flags != 0 ? EOPNOTSUPP : EMSGSIZE;
         return -1;
     }
-    const struct sockaddr_in *peer = (const struct sockaddr_in *)dest_addr;
-    if (peer->sin_port == 0) {
+    const struct sockaddr_in *destination_ipv4_address =
+        (const struct sockaddr_in *)destination_address;
+    if (destination_ipv4_address->sin_port == 0) {
         errno = EINVAL;
         return -1;
     }
-    struct udp_socket *socket = acquire_socket(sockfd);
+    struct udp_socket *socket = acquire_socket(socket_fd);
     if (socket == NULL) {
         return -1;
     }
-    struct udp_datagram *datagram = create_datagram(buf, len);
+    struct udp_datagram *datagram = create_datagram(payload, payload_length);
     if (datagram == NULL) {
         release_socket(socket);
         errno = ENOMEM;
@@ -336,12 +341,13 @@ ssize_t nsendto(int sockfd, const void *buf, size_t len, int flags,
     if (socket->closing || !socket->bound) {
         error = socket->closing ? EBADF : EINVAL;
     } else {
-        datagram->sip = socket->localip == htonl(INADDR_ANY) ? local_host_ip : socket->localip;
-        datagram->sport = socket->localport;
-        datagram->dip = peer->sin_addr.s_addr;
-        datagram->dport = peer->sin_port;
-        datagram->expire_tsc = rte_rdtsc() + rte_get_timer_hz() * UDP_SEND_TIMEOUT_SECONDS;
-        if (rte_ring_enqueue(socket->sndbuf, datagram) != 0) {
+        datagram->source_ip =
+            socket->local_ip == htonl(INADDR_ANY) ? local_host_ip : socket->local_ip;
+        datagram->source_port = socket->local_port;
+        datagram->destination_ip = destination_ipv4_address->sin_addr.s_addr;
+        datagram->destination_port = destination_ipv4_address->sin_port;
+        datagram->send_deadline_tsc = rte_rdtsc() + rte_get_timer_hz() * UDP_SEND_TIMEOUT_SECONDS;
+        if (rte_ring_enqueue(socket->send_queue, datagram) != 0) {
             error = ENOBUFS;
         }
     }
@@ -352,12 +358,12 @@ ssize_t nsendto(int sockfd, const void *buf, size_t len, int flags,
         errno = error;
         return -1;
     }
-    /* Accepted into sndbuf; this does not mean that the peer has received it. */
-    return (ssize_t)len;
+    /* Accepted into send_queue; this does not mean that the peer has received it. */
+    return (ssize_t)payload_length;
 }
 
-int nclose(int sockfd) {
-    struct udp_socket *socket = acquire_socket(sockfd);
+int udp_socket_close(int socket_fd) {
+    struct udp_socket *socket = acquire_socket(socket_fd);
     if (socket == NULL) {
         return -1;
     }
@@ -380,28 +386,28 @@ int nclose(int sockfd) {
     return 0;
 }
 
-int udp_socket_deliver(uint32_t sip, uint16_t sport, uint32_t dip, uint16_t dport,
-                       const uint8_t *payload, uint16_t length) {
-    if (length > UDP_MAX_PAYLOAD_SIZE) {
+int udp_socket_deliver(uint32_t source_ip, uint16_t source_port, uint32_t destination_ip,
+                       uint16_t destination_port, const uint8_t *payload, uint16_t payload_length) {
+    if (payload_length > UDP_MAX_PAYLOAD_SIZE) {
         return -1;
     }
-    struct udp_socket *socket = acquire_bound_socket(dip, dport);
+    struct udp_socket *socket = acquire_bound_socket(destination_ip, destination_port);
     if (socket == NULL) {
         return -1;
     }
-    struct udp_datagram *datagram = create_datagram(payload, length);
+    struct udp_datagram *datagram = create_datagram(payload, payload_length);
     if (datagram == NULL) {
         release_socket(socket);
         return -1;
     }
-    datagram->sip = sip;
-    datagram->sport = sport;
-    datagram->dip = dip;
-    datagram->dport = dport;
+    datagram->source_ip = source_ip;
+    datagram->source_port = source_port;
+    datagram->destination_ip = destination_ip;
+    datagram->destination_port = destination_port;
 
     int ret = -1;
     pthread_mutex_lock(&socket->mutex);
-    if (!socket->closing && rte_ring_enqueue(socket->rcvbuf, datagram) == 0) {
+    if (!socket->closing && rte_ring_enqueue(socket->receive_queue, datagram) == 0) {
         pthread_cond_signal(&socket->cond);
         ret = 0;
     }
@@ -427,22 +433,23 @@ void udp_socket_flush(struct rte_mempool *mbuf_pool) {
 
     for (unsigned i = 0; i < count; i++) {
         struct udp_socket *socket = sockets[i];
-        /* A retry returns to sndbuf; never drain it repeatedly in the same pass. */
-        unsigned budget = rte_ring_count(socket->sndbuf);
+        /* A retry returns to send_queue; never drain it repeatedly in the same pass. */
+        unsigned budget = rte_ring_count(socket->send_queue);
         if (budget > BURST_SIZE) {
             budget = BURST_SIZE;
         }
         for (unsigned j = 0; j < budget; j++) {
             struct udp_datagram *datagram = NULL;
             pthread_mutex_lock(&socket->mutex);
-            int ret = socket->closing ? -1 : rte_ring_dequeue(socket->sndbuf, (void **)&datagram);
+            int ret =
+                socket->closing ? -1 : rte_ring_dequeue(socket->send_queue, (void **)&datagram);
             pthread_mutex_unlock(&socket->mutex);
             if (ret != 0) {
                 break;
             }
             if (udp_output(mbuf_pool, datagram) == 1) {
                 pthread_mutex_lock(&socket->mutex);
-                ret = socket->closing ? -1 : rte_ring_enqueue(socket->sndbuf, datagram);
+                ret = socket->closing ? -1 : rte_ring_enqueue(socket->send_queue, datagram);
                 pthread_mutex_unlock(&socket->mutex);
                 if (ret == 0) {
                     continue;

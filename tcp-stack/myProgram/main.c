@@ -9,20 +9,24 @@
 #include <rte_mempool.h>
 #include <rte_timer.h>
 
-#include "app_state.h"
-#include "arp.h"
+#include "common/app_state.h"
+#include "protocol/arp.h"
 #include "config.h"
-#include "net_arch.h"
-#include "packet.h"
-#include "port_init.h"
-#include "udp_app.h"
+#include "common/net_arch.h"
+#include "common/packet.h"
+#include "common/port_init.h"
+#include "app/tcp_app.h"
+#include "app/udp_app.h"
 
-#if ENABLE_UDP_APP
 static void *run_udp_application(void *arg) {
     udp_server_entry(arg);
     return NULL;
 }
-#endif
+
+static void *run_tcp_application(void *arg) {
+    tcp_server_entry(arg);
+    return NULL;
+}
 
 int main(int argc, char *argv[]) {
     int ret = rte_eal_init(argc, argv);
@@ -47,7 +51,7 @@ int main(int argc, char *argv[]) {
         rte_exit(EXIT_FAILURE, "Could not create packet rings\n");
     }
     port_init(mbuf_pool);
-    rte_eth_macaddr_get(DPDK_PORT_ID, (struct rte_ether_addr *)src_mac);
+    rte_eth_macaddr_get(DPDK_PORT_ID, (struct rte_ether_addr *)local_mac);
     rte_timer_subsystem_init();
 
     struct rte_timer arp_timer;
@@ -64,7 +68,6 @@ int main(int argc, char *argv[]) {
         rte_exit(EXIT_FAILURE, "Could not launch protocol lcore\n");
     }
 
-#if ENABLE_UDP_APP
     /* A blocking application thread can share a CPU on a two-vCPU VM. */
     pthread_t app_thread;
     ret = pthread_create(&app_thread, NULL, run_udp_application, NULL);
@@ -72,7 +75,13 @@ int main(int argc, char *argv[]) {
         rte_exit(EXIT_FAILURE, "Could not launch UDP application thread: %d\n", ret);
     }
     pthread_detach(app_thread);
-#endif
+
+    pthread_t tcp_app_thread;
+    ret = pthread_create(&tcp_app_thread, NULL, run_tcp_application, NULL);
+    if (ret != 0) {
+        rte_exit(EXIT_FAILURE, "Could not launch TCP application thread: %d\n", ret);
+    }
+    pthread_detach(tcp_app_thread);
 
     printf("Packet I/O lcore: %u, protocol lcore: %u\n", rte_lcore_id(), protocol_lcore);
     return io_worker(NULL);

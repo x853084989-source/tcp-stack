@@ -30,13 +30,14 @@ struct arp_table {
 struct arp_table *arp_table_instance(void);
 
 /* The returned MAC address is borrowed from the ARP table. */
-uint8_t *get_dst_macaddr(uint32_t dip);
+uint8_t *arp_lookup_mac(uint32_t destination_ip);
 
-struct rte_mbuf *send_arp(struct rte_mempool *mbuf_pool, uint16_t opcode, uint8_t *dst_mac,
-                          uint32_t sip, uint32_t dip);
+struct rte_mbuf *build_arp_packet(struct rte_mempool *mbuf_pool, uint16_t opcode,
+                                  uint8_t *destination_mac, uint32_t source_ip,
+                                  uint32_t destination_ip);
 
 /* Borrows the received header; the packet loop releases the received mbuf. */
-void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *ahdr);
+void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_header);
 void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg);
 
 #endif /* MYPROGRAM_ARP_H */

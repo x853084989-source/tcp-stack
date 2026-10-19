@@ -10,9 +10,9 @@
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 
-#include "app_state.h"
+#include "common/app_state.h"
 #include "config.h"
-#include "net_arch.h"
+#include "common/net_arch.h"
 
 #define LL_ADD(item, list)                                                                         \
     do {                                                                                           \
@@ -21,17 +21,6 @@
         if (list != NULL)                                                                          \
             list->prev = item;                                                                     \
         list = item;                                                                               \
-    } while (0)
-
-#define LL_REMOVE(item, list)                                                                      \
-    do {                                                                                           \
-        if (item->prev != NULL)                                                                    \
-            item->prev->next = item->next;                                                         \
-        if (item->next != NULL)                                                                    \
-            item->next->prev = item->prev;                                                         \
-        if (list == item)                                                                          \
-            list = item->next;                                                                     \
-        item->prev = item->next = NULL;                                                            \
     } while (0)
 
 static uint8_t broadcast_arp_mac[RTE_ETHER_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -53,12 +42,12 @@ struct arp_table *arp_table_instance(void) {
     return arp_table;
 }
 
-uint8_t *get_dst_macaddr(uint32_t dip) {
+uint8_t *arp_lookup_mac(uint32_t destination_ip) {
     struct arp_table_item *iter;
     struct arp_table *table = arp_table_instance();
 
     for (iter = table->top_table; iter != NULL; iter = iter->next) {
-        if (dip == iter->ip) {
+        if (destination_ip == iter->ip) {
             return iter->mac_addr;
         }
     }
@@ -66,40 +55,42 @@ uint8_t *get_dst_macaddr(uint32_t dip) {
     return NULL;
 }
 
-static int encode_arp_pkt(uint8_t *msg, uint16_t opcode, uint8_t *dst_mac, uint32_t sip,
-                          uint32_t dip) {
+static int encode_arp_packet(uint8_t *packet_data, uint16_t opcode, uint8_t *destination_mac,
+                             uint32_t source_ip, uint32_t destination_ip) {
     // 1 ethhdr
-    struct rte_ether_hdr *eth = (struct rte_ether_hdr *)msg;
-    rte_memcpy(eth->s_addr.addr_bytes, src_mac, RTE_ETHER_ADDR_LEN);
+    struct rte_ether_hdr *ethernet_header = (struct rte_ether_hdr *)packet_data;
+    rte_memcpy(ethernet_header->s_addr.addr_bytes, local_mac, RTE_ETHER_ADDR_LEN);
 
-    if (!strncmp((const char *)dst_mac, (const char *)broadcast_arp_mac, RTE_ETHER_ADDR_LEN)) {
+    if (!strncmp((const char *)destination_mac, (const char *)broadcast_arp_mac,
+                 RTE_ETHER_ADDR_LEN)) {
         uint8_t mac[RTE_ETHER_ADDR_LEN];
         rte_memcpy(mac, broadcast_arp_mac, RTE_ETHER_ADDR_LEN);
-        rte_memcpy(eth->d_addr.addr_bytes, mac, RTE_ETHER_ADDR_LEN);
+        rte_memcpy(ethernet_header->d_addr.addr_bytes, mac, RTE_ETHER_ADDR_LEN);
     } else {
-        rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+        rte_memcpy(ethernet_header->d_addr.addr_bytes, destination_mac, RTE_ETHER_ADDR_LEN);
     }
-    eth->ether_type = htons(RTE_ETHER_TYPE_ARP);
+    ethernet_header->ether_type = htons(RTE_ETHER_TYPE_ARP);
 
     // 2 arp
-    struct rte_arp_hdr *arp = (struct rte_arp_hdr *)(eth + 1);
-    arp->arp_hardware = htons(1);
-    arp->arp_protocol = htons(RTE_ETHER_TYPE_IPV4);
-    arp->arp_hlen = RTE_ETHER_ADDR_LEN;
-    arp->arp_plen = sizeof(uint32_t);
-    arp->arp_opcode = htons(opcode);
+    struct rte_arp_hdr *arp_header = (struct rte_arp_hdr *)(ethernet_header + 1);
+    arp_header->arp_hardware = htons(1);
+    arp_header->arp_protocol = htons(RTE_ETHER_TYPE_IPV4);
+    arp_header->arp_hlen = RTE_ETHER_ADDR_LEN;
+    arp_header->arp_plen = sizeof(uint32_t);
+    arp_header->arp_opcode = htons(opcode);
 
-    rte_memcpy(arp->arp_data.arp_sha.addr_bytes, src_mac, RTE_ETHER_ADDR_LEN);
-    rte_memcpy(arp->arp_data.arp_tha.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+    rte_memcpy(arp_header->arp_data.arp_sha.addr_bytes, local_mac, RTE_ETHER_ADDR_LEN);
+    rte_memcpy(arp_header->arp_data.arp_tha.addr_bytes, destination_mac, RTE_ETHER_ADDR_LEN);
 
-    arp->arp_data.arp_sip = sip;
-    arp->arp_data.arp_tip = dip;
+    arp_header->arp_data.arp_sip = source_ip;
+    arp_header->arp_data.arp_tip = destination_ip;
 
     return 0;
 }
 
-struct rte_mbuf *send_arp(struct rte_mempool *mbuf_pool, uint16_t opcode, uint8_t *dst_mac,
-                          uint32_t sip, uint32_t dip) {
+struct rte_mbuf *build_arp_packet(struct rte_mempool *mbuf_pool, uint16_t opcode,
+                                  uint8_t *destination_mac, uint32_t source_ip,
+                                  uint32_t destination_ip) {
     const unsigned total_length = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
 
     struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
@@ -111,7 +102,7 @@ struct rte_mbuf *send_arp(struct rte_mempool *mbuf_pool, uint16_t opcode, uint8_
     mbuf->data_len = total_length;
 
     uint8_t *pkt_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
-    encode_arp_pkt(pkt_data, opcode, dst_mac, sip, dip);
+    encode_arp_packet(pkt_data, opcode, destination_mac, source_ip, destination_ip);
 
     return mbuf;
 }
@@ -124,43 +115,44 @@ void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *a
     int i = 0;
     printf("\nNotice:arp table is been searching: %d\n", arp_request_count++);
     for (i = 1; i <= 254; i++) {
-        uint32_t dstip = htonl(subnet | (uint32_t)i);
+        uint32_t destination_ip = htonl(subnet | (uint32_t)i);
 
         struct in_addr addr;
-        addr.s_addr = dstip;
+        addr.s_addr = destination_ip;
 
         struct rte_mbuf *arpbuf = NULL;
-        uint8_t *dstmac = get_dst_macaddr(dstip);
-        if (dstmac == NULL) {
-            arpbuf = send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, broadcast_arp_mac, local_host_ip,
-                              dstip); // ARP table dont have dstmac, send arp request
+        uint8_t *destination_mac = arp_lookup_mac(destination_ip);
+        if (destination_mac == NULL) {
+            arpbuf =
+                build_arp_packet(mbuf_pool, RTE_ARP_OP_REQUEST, broadcast_arp_mac, local_host_ip,
+                                 destination_ip); // ARP table dont have dstmac, send arp request
         } else {
             printf("target ip and its mac address is searched in arp table successfully: %s \n",
                    inet_ntoa(addr));
-            arpbuf = send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, dstmac, local_host_ip,
-                              dstip); // ARP table have dstmac, send arp request
+            arpbuf = build_arp_packet(mbuf_pool, RTE_ARP_OP_REQUEST, destination_mac, local_host_ip,
+                                      destination_ip); // ARP table have dstmac, send arp request
         }
 
         queue_tx_packet(arpbuf);
     }
 }
 
-void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *ahdr) {
+void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_header) {
     int ret;
-    if (ahdr->arp_data.arp_tip == local_host_ip) {
+    if (arp_header->arp_data.arp_tip == local_host_ip) {
         struct in_addr addr;
-        addr.s_addr = ahdr->arp_data.arp_tip;
+        addr.s_addr = arp_header->arp_data.arp_tip;
         printf("[Received ARP message to local IP: %s\n", inet_ntoa(addr));
 
-        if (ahdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
-            addr.s_addr = ahdr->arp_data.arp_sip;
+        if (arp_header->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
+            addr.s_addr = arp_header->arp_data.arp_sip;
             printf(" Received ARP request from IP: %s\n", inet_ntoa(addr));
             // ARP reply
             // check table
 
-            struct rte_mbuf *arp_reply_buf =
-                send_arp(mbuf_pool, RTE_ARP_OP_REPLY, ahdr->arp_data.arp_sha.addr_bytes,
-                         ahdr->arp_data.arp_tip, ahdr->arp_data.arp_sip);
+            struct rte_mbuf *arp_reply_buf = build_arp_packet(
+                mbuf_pool, RTE_ARP_OP_REPLY, arp_header->arp_data.arp_sha.addr_bytes,
+                arp_header->arp_data.arp_tip, arp_header->arp_data.arp_sip);
 
             ret = queue_tx_packet(arp_reply_buf);
 
@@ -169,13 +161,13 @@ void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *ahdr)
             } else {
                 printf(" Failed to queue ARP reply ]\n");
             }
-        } else if (ahdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
-            addr.s_addr = ahdr->arp_data.arp_sip;
+        } else if (arp_header->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
+            addr.s_addr = arp_header->arp_data.arp_sip;
             printf(" Received ARP reply: ");
             printf(" ARP reply from IP: %s]\n", inet_ntoa(addr));
             // save in ARP table
             struct arp_table *table = arp_table_instance();
-            uint8_t *mac_addr = get_dst_macaddr(ahdr->arp_data.arp_sip);
+            uint8_t *mac_addr = arp_lookup_mac(arp_header->arp_data.arp_sip);
 
             if (mac_addr == NULL) {
                 struct arp_table_item *iter =
@@ -185,8 +177,9 @@ void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *ahdr)
                     rte_exit(EXIT_FAILURE, "rte_malloc arp_table_item failed\n");
                 }
 
-                iter->ip = ahdr->arp_data.arp_sip;
-                rte_memcpy(iter->mac_addr, ahdr->arp_data.arp_sha.addr_bytes, RTE_ETHER_ADDR_LEN);
+                iter->ip = arp_header->arp_data.arp_sip;
+                rte_memcpy(iter->mac_addr, arp_header->arp_data.arp_sha.addr_bytes,
+                           RTE_ETHER_ADDR_LEN);
                 LL_ADD(iter, table->top_table);
 
                 // check if the iter is added to the table
@@ -194,7 +187,7 @@ void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *ahdr)
                     struct in_addr addr;
                     addr.s_addr = iter->ip;
 
-                    if (iter->ip == ahdr->arp_data.arp_sip) {
+                    if (iter->ip == arp_header->arp_data.arp_sip) {
                         char mac_str[32];
                         rte_ether_format_addr(mac_str, sizeof(mac_str),
                                               (const struct rte_ether_addr *)iter->mac_addr);

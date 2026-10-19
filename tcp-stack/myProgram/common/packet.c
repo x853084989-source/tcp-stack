@@ -10,12 +10,14 @@
 #include <rte_timer.h>
 #include <rte_icmp.h>
 
-#include "arp.h"
-#include "icmp.h"
+#include "protocol/arp.h"
+#include "protocol/icmp.h"
 #include "config.h"
-#include "net_arch.h"
-#include "udp.h"
-#include "udp_socket.h"
+#include "common/net_arch.h"
+#include "protocol/udp.h"
+#include "socket/udp_socket.h"
+#include "protocol/tcp.h"
+#include "socket/tcp_socket.h"
 
 void process_packets(struct rte_mempool *mbuf_pool, struct rte_mbuf **mbufs, int num_recvd) {
     for (int i = 0; i < num_recvd; i++) {
@@ -24,37 +26,41 @@ void process_packets(struct rte_mempool *mbuf_pool, struct rte_mbuf **mbufs, int
             rte_pktmbuf_free(mbufs[i]);
             continue;
         }
-        struct rte_ether_hdr *ehdr = rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr *);
+        struct rte_ether_hdr *ethernet_header = rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr *);
 
-        if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP) &&
+        if (ethernet_header->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP) &&
             rte_pktmbuf_data_len(mbufs[i]) >=
                 sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr)) {
-            struct rte_arp_hdr *ahdr = rte_pktmbuf_mtod_offset(mbufs[i], struct rte_arp_hdr *,
-                                                               sizeof(struct rte_ether_hdr));
-            process_arp_packet(mbuf_pool, ahdr);
+            struct rte_arp_hdr *arp_header = rte_pktmbuf_mtod_offset(mbufs[i], struct rte_arp_hdr *,
+                                                                     sizeof(struct rte_ether_hdr));
+            process_arp_packet(mbuf_pool, arp_header);
         }
 
-        if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
+        if (ethernet_header->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
             if (rte_pktmbuf_data_len(mbufs[i]) <
                 sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr)) {
                 rte_pktmbuf_free(mbufs[i]);
                 continue;
             }
-            struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(mbufs[i], struct rte_ipv4_hdr *,
-                                                                 sizeof(struct rte_ether_hdr));
+            struct rte_ipv4_hdr *ipv4_header = rte_pktmbuf_mtod_offset(
+                mbufs[i], struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
             struct in_addr addr;
-            addr.s_addr = iphdr->src_addr;
+            addr.s_addr = ipv4_header->src_addr;
             printf("[Received IPv4 message from source IP: %s\n", inet_ntoa(addr));
 
-            if (iphdr->next_proto_id == IPPROTO_UDP) {
-                process_udp_packet(mbuf_pool, mbufs[i], ehdr, iphdr);
+            if (ipv4_header->next_proto_id == IPPROTO_UDP) {
+                process_udp_packet(mbuf_pool, mbufs[i], ethernet_header, ipv4_header);
             }
 
-            if (iphdr->next_proto_id == IPPROTO_ICMP && iphdr->version_ihl == 0x45 &&
+            if (ipv4_header->next_proto_id == IPPROTO_TCP) {
+                process_tcp_packet(mbufs[i], ipv4_header);
+            }
+
+            if (ipv4_header->next_proto_id == IPPROTO_ICMP && ipv4_header->version_ihl == 0x45 &&
                 rte_pktmbuf_data_len(mbufs[i]) >= sizeof(struct rte_ether_hdr) +
                                                       sizeof(struct rte_ipv4_hdr) +
                                                       sizeof(struct rte_icmp_hdr)) {
-                process_icmp_packet(mbuf_pool, mbufs[i], ehdr, iphdr);
+                process_icmp_packet(mbuf_pool, mbufs[i], ethernet_header, ipv4_header);
             }
         }
 
@@ -64,22 +70,21 @@ void process_packets(struct rte_mempool *mbuf_pool, struct rte_mbuf **mbufs, int
 
 int packet_worker(void *arg) {
     struct rte_mempool *mbuf_pool = arg;
-    struct inout_ring *rings = ring_instance();
-    uint64_t prev_tsc = 0;
+    struct inout_ring *rings = packet_rings_instance();
+    uint64_t last_timer_manage_tsc = 0;
 
     while (1) {
         struct rte_mbuf *mbufs[BURST_SIZE];
         unsigned count = rte_ring_dequeue_burst(rings->in, (void **)mbufs, BURST_SIZE, NULL);
         process_packets(mbuf_pool, mbufs, (int)count);
 
-#if ENABLE_UDP_APP
         udp_socket_flush(mbuf_pool);
-#endif
+        tcp_socket_flush(mbuf_pool);
 
-        uint64_t cur_tsc = rte_rdtsc();
-        if (cur_tsc - prev_tsc > TIMER_RESOLUTION_CYCLES) {
+        uint64_t current_tsc = rte_rdtsc();
+        if (current_tsc - last_timer_manage_tsc > TIMER_RESOLUTION_CYCLES) {
             rte_timer_manage();
-            prev_tsc = cur_tsc;
+            last_timer_manage_tsc = current_tsc;
         }
     }
     return 0;
