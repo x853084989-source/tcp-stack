@@ -69,12 +69,12 @@ int main(int argc, char *argv[]) {
     }
 
     /* A blocking application thread can share a CPU on a two-vCPU VM. */
-    pthread_t app_thread;
-    ret = pthread_create(&app_thread, NULL, run_udp_application, NULL);
+    pthread_t udp_app_thread;
+    ret = pthread_create(&udp_app_thread, NULL, run_udp_application, NULL);
     if (ret != 0) {
         rte_exit(EXIT_FAILURE, "Could not launch UDP application thread: %d\n", ret);
     }
-    pthread_detach(app_thread);
+    pthread_detach(udp_app_thread);
 
     pthread_t tcp_app_thread;
     ret = pthread_create(&tcp_app_thread, NULL, run_tcp_application, NULL);

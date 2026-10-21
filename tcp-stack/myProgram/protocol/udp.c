@@ -72,8 +72,7 @@ static struct rte_mbuf *build_udp_packet(struct rte_mempool *mbuf_pool, const ui
     return mbuf;
 }
 
-void process_udp_packet(struct rte_mempool *mbuf_pool, struct rte_mbuf *mbuf,
-                        struct rte_ether_hdr *ethernet_header, struct rte_ipv4_hdr *ipv4_header) {
+void udp_input(struct rte_mbuf *mbuf, struct rte_ipv4_hdr *ipv4_header) {
     const uint16_t ip_hdr_len = (ipv4_header->version_ihl & 0x0f) * 4;
     const uint16_t ip_len = ntohs(ipv4_header->total_length);
     const uint16_t frag_off = ntohs(ipv4_header->fragment_offset);
@@ -95,11 +94,9 @@ void process_udp_packet(struct rte_mempool *mbuf_pool, struct rte_mbuf *mbuf,
     const uint16_t payload_len = udp_len - sizeof(struct rte_udp_hdr);
     const uint8_t *payload = (const uint8_t *)(udp_header + 1);
 
-    (void)mbuf_pool;
-    (void)ethernet_header;
     if (ipv4_header->dst_addr == local_host_ip) {
-        udp_socket_deliver(ipv4_header->src_addr, udp_header->src_port, ipv4_header->dst_addr,
-                           udp_header->dst_port, payload, payload_len);
+        udp_socket_input(ipv4_header->src_addr, udp_header->src_port, ipv4_header->dst_addr,
+                         udp_header->dst_port, payload, payload_len);
     }
 }
 
@@ -115,7 +112,7 @@ int udp_output(struct rte_mempool *mbuf_pool, struct udp_datagram *datagram) {
             struct rte_mbuf *request =
                 build_arp_packet(mbuf_pool, RTE_ARP_OP_REQUEST, broadcast_mac, datagram->source_ip,
                                  datagram->destination_ip);
-            queue_tx_packet(request);
+            enqueue_tx_packet(request);
             datagram->next_arp_retry_tsc = now + rte_get_timer_hz() * ARP_RETRY_SECONDS;
         }
         return 1;
@@ -125,5 +122,5 @@ int udp_output(struct rte_mempool *mbuf_pool, struct udp_datagram *datagram) {
         build_udp_packet(mbuf_pool, datagram->payload, datagram->payload_length, destination_mac,
                          datagram->source_ip, datagram->destination_ip, datagram->source_port,
                          datagram->destination_port);
-    return queue_tx_packet(mbuf);
+    return enqueue_tx_packet(mbuf);
 }

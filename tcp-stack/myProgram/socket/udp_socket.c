@@ -73,7 +73,7 @@ static void destroy_socket(struct udp_socket *socket) {
     rte_free(socket);
 }
 
-/* Active calls keep a reference, including while nrecvfrom is asleep. */
+/* Active calls keep a reference, including while udp_socket_receive is asleep. */
 static void release_socket(struct udp_socket *socket) {
     int destroy = 0;
     pthread_mutex_lock(&socket_list_mutex);
@@ -242,8 +242,8 @@ int udp_socket_bind(int socket_fd, const struct sockaddr *addr, socklen_t addres
     return 0;
 }
 
-ssize_t nrecvfrom(int socket_fd, void *buffer, size_t buffer_length, int flags,
-                  struct sockaddr *source_address, socklen_t *address_length) {
+ssize_t udp_socket_receive(int socket_fd, void *buffer, size_t buffer_length, int flags,
+                           struct sockaddr *source_address, socklen_t *address_length) {
     if ((buffer == NULL && buffer_length != 0) ||
         (source_address != NULL && address_length == NULL)) {
         errno = EINVAL;
@@ -308,8 +308,8 @@ ssize_t nrecvfrom(int socket_fd, void *buffer, size_t buffer_length, int flags,
     return copied;
 }
 
-ssize_t nsendto(int socket_fd, const void *payload, size_t payload_length, int flags,
-                const struct sockaddr *destination_address, socklen_t address_length) {
+ssize_t udp_socket_send(int socket_fd, const void *payload, size_t payload_length, int flags,
+                        const struct sockaddr *destination_address, socklen_t address_length) {
     if ((payload == NULL && payload_length != 0) || destination_address == NULL ||
         address_length < sizeof(struct sockaddr_in) || destination_address->sa_family != AF_INET) {
         errno = EINVAL;
@@ -386,8 +386,9 @@ int udp_socket_close(int socket_fd) {
     return 0;
 }
 
-int udp_socket_deliver(uint32_t source_ip, uint16_t source_port, uint32_t destination_ip,
-                       uint16_t destination_port, const uint8_t *payload, uint16_t payload_length) {
+/* Match an endpoint, copy payload, enqueue the datagram and wake its receiver. */
+int udp_socket_input(uint32_t source_ip, uint16_t source_port, uint32_t destination_ip,
+                     uint16_t destination_port, const uint8_t *payload, uint16_t payload_length) {
     if (payload_length > UDP_MAX_PAYLOAD_SIZE) {
         return -1;
     }
@@ -419,7 +420,8 @@ int udp_socket_deliver(uint32_t source_ip, uint16_t source_port, uint32_t destin
     return ret;
 }
 
-void udp_socket_flush(struct rte_mempool *mbuf_pool) {
+/* Process one bounded send budget per endpoint; ARP misses remain queued. */
+void udp_socket_output(struct rte_mempool *mbuf_pool) {
     struct udp_socket *sockets[MAX_UDP_SOCKETS];
     unsigned count = 0;
     pthread_mutex_lock(&socket_list_mutex);

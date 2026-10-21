@@ -133,7 +133,7 @@ void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *a
                                       destination_ip); // ARP table have dstmac, send arp request
         }
 
-        queue_tx_packet(arpbuf);
+        enqueue_tx_packet(arpbuf);
     }
 }
 
@@ -154,7 +154,7 @@ void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_h
                 mbuf_pool, RTE_ARP_OP_REPLY, arp_header->arp_data.arp_sha.addr_bytes,
                 arp_header->arp_data.arp_tip, arp_header->arp_data.arp_sip);
 
-            ret = queue_tx_packet(arp_reply_buf);
+            ret = enqueue_tx_packet(arp_reply_buf);
 
             if (ret == 0) {
                 printf(" ARP reply queued for IP: %s ] \n", inet_ntoa(addr));

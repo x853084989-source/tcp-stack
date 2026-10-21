@@ -49,11 +49,11 @@ void process_packets(struct rte_mempool *mbuf_pool, struct rte_mbuf **mbufs, int
             printf("[Received IPv4 message from source IP: %s\n", inet_ntoa(addr));
 
             if (ipv4_header->next_proto_id == IPPROTO_UDP) {
-                process_udp_packet(mbuf_pool, mbufs[i], ethernet_header, ipv4_header);
+                udp_input(mbufs[i], ipv4_header);
             }
 
             if (ipv4_header->next_proto_id == IPPROTO_TCP) {
-                process_tcp_packet(mbufs[i], ipv4_header);
+                tcp_input(mbufs[i], ipv4_header);
             }
 
             if (ipv4_header->next_proto_id == IPPROTO_ICMP && ipv4_header->version_ihl == 0x45 &&
@@ -78,8 +78,8 @@ int packet_worker(void *arg) {
         unsigned count = rte_ring_dequeue_burst(rings->in, (void **)mbufs, BURST_SIZE, NULL);
         process_packets(mbuf_pool, mbufs, (int)count);
 
-        udp_socket_flush(mbuf_pool);
-        tcp_socket_flush(mbuf_pool);
+        udp_socket_output(mbuf_pool);
+        tcp_socket_output(mbuf_pool);
 
         uint64_t current_tsc = rte_rdtsc();
         if (current_tsc - last_timer_manage_tsc > TIMER_RESOLUTION_CYCLES) {

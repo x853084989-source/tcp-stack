@@ -106,7 +106,7 @@ void process_icmp_packet(struct rte_mempool *mbuf_pool, struct rte_mbuf *mbuf,
             mbuf_pool, ethernet_header->s_addr.addr_bytes, ipv4_header->dst_addr,
             ipv4_header->src_addr, icmp_header->icmp_ident, icmp_header->icmp_seq_nb);
 
-        ret = queue_tx_packet(icmp_reply_buf);
+        ret = enqueue_tx_packet(icmp_reply_buf);
         if (ret == 0) {
             printf(" ICMP reply queued for IP: %s]\n", inet_ntoa(addr));
         } else {

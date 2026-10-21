@@ -5,11 +5,11 @@
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 
-struct tcp_fragment;
+struct tcp_segment;
 
 /* Borrows mbuf; process_packets retains ownership. */
-void process_tcp_packet(struct rte_mbuf *mbuf, struct rte_ipv4_hdr *ipv4_header);
-/* 0: queued to out, 1: waiting for ARP, -1: dropped; fragment stays caller-owned. */
-int tcp_output(struct rte_mempool *mbuf_pool, struct tcp_fragment *fragment);
+void tcp_input(struct rte_mbuf *mbuf, struct rte_ipv4_hdr *ipv4_header);
+/* 0: queued to out, 1: waiting for ARP, -1: dropped; segment stays caller-owned. */
+int tcp_output(struct rte_mempool *mbuf_pool, struct tcp_segment *segment);
 
 #endif /* MYPROGRAM_TCP_H */

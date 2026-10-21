@@ -13,7 +13,7 @@ int net_arch_init(void);
 struct inout_ring *packet_rings_instance(void);
 
 /* Consumes mbuf: queues it on success, frees it on failure. */
-int queue_tx_packet(struct rte_mbuf *mbuf);
+int enqueue_tx_packet(struct rte_mbuf *mbuf);
 
 /* Runs on the main lcore; it is the only owner of the NIC RX/TX queues. */
 int io_worker(void *arg);

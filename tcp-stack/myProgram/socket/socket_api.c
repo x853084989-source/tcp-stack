@@ -41,6 +41,18 @@ ssize_t nsend(int socket_fd, const void *payload, size_t payload_length, int fla
     return tcp_socket_send(socket_fd, payload, payload_length, flags);
 }
 
+ssize_t nrecvfrom(int socket_fd, void *buffer, size_t buffer_length, int flags,
+                  struct sockaddr *source_address, socklen_t *address_length) {
+    return udp_socket_receive(socket_fd, buffer, buffer_length, flags, source_address,
+                              address_length);
+}
+
+ssize_t nsendto(int socket_fd, const void *payload, size_t payload_length, int flags,
+                const struct sockaddr *destination_address, socklen_t address_length) {
+    return udp_socket_send(socket_fd, payload, payload_length, flags, destination_address,
+                           address_length);
+}
+
 int nclose(int socket_fd) {
     if (socket_fd >= TCP_FIRST_FD) {
         return tcp_socket_close(socket_fd);

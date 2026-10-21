@@ -31,7 +31,7 @@ int net_arch_init(void) {
     return 0;
 }
 
-int queue_tx_packet(struct rte_mbuf *mbuf) {
+int enqueue_tx_packet(struct rte_mbuf *mbuf) {
     if (mbuf == NULL) {
         return -1;
     }
