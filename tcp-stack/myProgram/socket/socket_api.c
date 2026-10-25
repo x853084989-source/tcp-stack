@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "socket/tcp_socket.h"
+#include "socket/event_poll.h"
 #include "socket/udp_socket.h"
 
 int nsocket(int domain, int type, int protocol) {
@@ -54,8 +55,23 @@ ssize_t nsendto(int socket_fd, const void *payload, size_t payload_length, int f
 }
 
 int nclose(int socket_fd) {
+    if (socket_fd == EVENT_POLL_FD) {
+        return event_poll_close(socket_fd);
+    }
     if (socket_fd >= TCP_FIRST_FD) {
         return tcp_socket_close(socket_fd);
     }
     return udp_socket_close(socket_fd);
+}
+
+int nepoll_create(int size) {
+    return event_poll_create(size);
+}
+
+int nepoll_ctl(int epoll_fd, int operation, int socket_fd, struct epoll_event *event) {
+    return tcp_socket_poll_control(epoll_fd, operation, socket_fd, event);
+}
+
+int nepoll_wait(int epoll_fd, struct epoll_event *events, int max_events, int timeout_ms) {
+    return event_poll_wait(epoll_fd, events, max_events, timeout_ms);
 }

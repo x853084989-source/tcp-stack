@@ -200,3 +200,25 @@ void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_h
         }
     }
 }
+
+void arp_learn(uint32_t source_ip, const uint8_t *source_mac) {
+    static const uint8_t empty_mac[RTE_ETHER_ADDR_LEN];
+    if (source_ip == 0 || source_ip == local_host_ip || (source_mac[0] & 1) != 0 ||
+        memcmp(source_mac, empty_mac, RTE_ETHER_ADDR_LEN) == 0) {
+        return;
+    }
+    struct arp_table *table = arp_table_instance();
+    uint8_t *mac = arp_lookup_mac(source_ip);
+    if (mac != NULL) {
+        rte_memcpy(mac, source_mac, RTE_ETHER_ADDR_LEN);
+        return;
+    }
+    struct arp_table_item *entry = rte_zmalloc("arp_table_item", sizeof(*entry), 0);
+    if (entry == NULL) {
+        return;
+    }
+    entry->ip = source_ip;
+    rte_memcpy(entry->mac_addr, source_mac, RTE_ETHER_ADDR_LEN);
+    LL_ADD(entry, table->top_table);
+    table->count++;
+}

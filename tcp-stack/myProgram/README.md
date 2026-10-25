@@ -1,203 +1,199 @@
-# myProgram：06/07 网络架构、UDP 与 08～10 TCP 应用接口
+# myProgram：11～13 KNI、窗口检测与 TCP 多连接通知
 
-沿用原有四空格、snake_case、.c/.h 按职责拆分的风格，在已有 06/07 版本上整合
-10_tcp_api/tcp.c 的 TCP 服务端主线。原有未提交的可读性重构作为本轮基线保留。
+2026-10-25 在 `dc6e0bb`（10.21）加既有未提交工作树上整合 11～13。
+保留 app / socket / protocol / common 分类、已有函数/参数/字段名称，以及用户的 if/else 修改。
+没有移动或删除原有源码；本轮不是全项目重命名。原有 UDP socket 文件逐字保持基线内容。
 
-## 目录结构
+## 本轮相对旧版的变化
 
-~~~text
-myProgram/
-├── main.c               # 启动和执行角色安排
-├── config.h             # 配置与保留的 ENABLE 定义
-├── app/                 # UDP / TCP 回显应用
-├── common/              # 共享本地地址、网卡、收发队列和协议循环
-├── protocol/            # ARP / ICMP / UDP / TCP 报文处理
-├── socket/              # 共用 n* 接口、UDP 端点、TCP 连接与状态
-├── Makefile
-└── README.md
-~~~
+| 分类与位置 | 旧行为 → 新行为 | 原因与影响 |
+| --- | --- | --- |
+| 新增 common/kni.c/.h | 没有内核通道 → 默认创建 vEth0，收发 KNI 报文并服务接口控制请求 | 补齐参考 11 没有实现的内核回程；逐包提交，明确 mbuf 所有权 |
+| 新增 common/ddos.c/.h | 没有入口统计 → 网卡 RX 入 in 前统计实际报文的位与窗口指标 | 保留参考的 256 包窗口、公式、1200 阈值和触发退出，修正读取与数值边界 |
+| 新增 socket/event_poll.c/.h | 只能等待单个 socket → 红黑树管理注册，就绪链表管理可读对象 | 支持本项目的 nepoll 单实例与多连接读取 |
+| 新增 common/nty_tree.h | 无树宏 → 引入参考 13 的红黑树宏 | 原样保留第三方源码及许可证，不要求学习时重写树算法 |
+| 修改 main.c | 网卡和 ring 初始化 → 再初始化 KNI，然后启动原有四个执行角色 | 默认需要 rte_kni 模块和 /dev/kni；失败明确退出 |
+| 修改 common/net_arch.c | RX 直接入 in → 先检测；I/O 循环同时服务 KNI 控制请求 | NIC 停启与 RX/TX 始终由同一 I/O 角色执行，停用期间不访问 NIC 队列 |
+| 修改 common/packet.c/.h | 用户态回答 ARP/ICMP → UDP/TCP 留在用户态，其余报文交 KNI | 交给 KNI 的 mbuf 不再由包循环重复释放；协议循环也处理 KNI 回程 |
+| 修改 protocol/arp.c/.h | 仅原有 ARP 输入路径更新表 → 新增 arp_learn，学习有效 ARP/IPv4 来源映射 | 分流后用户态 UDP/TCP 仍有目标 MAC；原 ARP/ICMP 实现保留供对照 |
+| 修改 socket/tcp_socket.c/.h | 仅 cond 唤醒 → 同时维护监听/连接的可读状态，关闭时撤销注册 | 注册前已有数据、短读、EOF 和尚有待接受连接均不丢通知 |
+| 修改 socket/socket_api.c/.h | 原 n* 接口 → 增加 nepoll_create/ctl/wait，nclose 分派 poll 描述符 | 保留原 socket 接口签名；事件对象和 socket 描述符不冲突 |
+| 修改 app/tcp_app.c | 接受一个连接后一直处理它 → 一个事件循环服务多个连接 | 每轮处理就绪连接；保留二进制、短读、部分发送与 EOF 后关闭 |
+| 修改 config.h、Makefile | 原构建源列表 → 纳入新模块和数学库 | 两套原构建分支均补充 -lm；ENABLE 定义继续保留，但不用于切换功能 |
 
-每个模块的 .c/.h 相邻。跨模块引用写明目录，例如 protocol/udp.h；
-Makefile 为两套原有构建分支提供项目根目录搜索路径。
+上表比较的是本轮开始时的工作树，不将用户原有的 TCP/UDP if/else 改动算作本轮新增。
+TCP 文件只清理了基线两处行尾空格，没有撤销其逻辑或重新命名。
 
-此前重构已删除未使用的 send_udp 包装及其旧全局地址缓存，
-ARP/ICMP 构造报文的函数已改名为 build_arp_packet/build_icmp_packet。
-本轮将 runtime 原样迁移为 common，更新引用与两套构建分支；新增 TCP 协议、连接和应用模块。
-Makefile 固定默认目标为 all，避免 legacy 构建载入旧依赖后只检查首个对象文件。
-应用中的 client_address 是本次收到数据报的客户端地址；
-socket 接口中的 source_address/destination_address 分别表示接收来源与发送目标。
-udp_datagram 的 payload/payload_length 明确只保存 UDP 正文，IP/端口仍是网络字节序。
-UDP 行为、已有队列容量、UDP ring 名称及 mbuf 所有权规则沿用原有实现。
-所有公开 n* 入口集中在 socket/socket_api.c，再转到 UDP 或 TCP 内部实现；
-UDP 描述符仍使用 3～66，TCP 使用后续独立区间，避免两类端点冲突。
+## 模块总览与数据交接
 
-## 2026-10-21 命名与接口归属整理
+```mermaid
+flowchart LR
+  N[外部客户端] <--> IO
+  subgraph I[主 lcore：I/O]
+    IO[io_worker：网卡 RX/TX]
+    D[ddos_detect：窗口统计]
+    C[kni_handle_requests：接口停启]
+    IO --> D
+    C --> IO
+  end
+  IN[in：RX mbuf 队列]
+  OUT[out：TX mbuf 队列]
+  D --> IN
+  D -. 超过原阈值 .-> EXIT[结束进程]
+  OUT --> IO
+  subgraph P[协议 lcore]
+    RX[packet_worker / process_packets：分流]
+    S[udp/tcp_input → socket_input：端点、状态、正文入队]
+    TX[socket_output → udp/tcp_output：发送推进]
+    A[ARP 缓存]
+    KS[kni_send：交内核]
+    KR[kni_receive：取内核回程]
+    RX --> S
+    RX --> A
+    A --> TX
+    RX --> KS
+  end
+  IN --> RX
+  TX --> OUT
+  KR --> OUT
+  K[Linux 内核 / vEth0]
+  KS --> K
+  K --> KR
+  K -. 控制请求 .-> C
+  U[UDP pthread：udp_server_entry]
+  T[TCP pthread：tcp_server_entry / nepoll_wait]
+  E[注册红黑树 / 就绪链表 / cond]
+  S -- receive_queue：正文副本 --> U
+  S -- receive_queue：正文副本 --> T
+  U -- nsendto → send_queue --> TX
+  T -- nsend → send_queue --> TX
+  S -- 更新可读状态 --> E
+  T -- ADD/MOD/DEL、等待 --> E
+  E -- 返回就绪事件 --> T
+```
 
-保留 app / socket / protocol / common 分类、公开 n* 接口和现有协议行为。
-本次只统一命名、集中应用入口、去掉 UDP 输入的未用参数，并清理内部头文件依赖。
+跨线程的队列箭头表示生产/消费，不表示生产者直接调用应用函数。
+in/out 保存整帧 mbuf 指针；每连接的队列保存独立正文副本；就绪事件只携带注册信息，不携带正文。
 
-| 层次 | UDP | TCP |
-|---|---|---|
-| 应用读 / 写的内部实现 | udp_socket_receive / udp_socket_send | tcp_socket_receive / tcp_socket_send |
-| 端点输入 / 输出推进 | udp_socket_input / udp_socket_output | tcp_socket_input / tcp_socket_output |
-| 报文输入 / 输出 | udp_input / udp_output | tcp_input / tcp_output |
-| 端点 / 排队数据 | udp_socket / udp_datagram | tcp_socket / tcp_segment |
+| 执行角色 | 创建或安排位置 | 入口与主要工作 |
+| --- | --- | --- |
+| 主 DPDK lcore | main 直接进入原主循环 | io_worker：KNI 控制请求、网卡 RX、检测、in 入队、out 出队与 TX |
+| 协议 DPDK lcore | EAL 已建立 worker，main 用 rte_eal_remote_launch 安排工作 | packet_worker：协议分类、ARP 学习、KNI 发送/回程、UDP/TCP 推进、定时器 |
+| UDP 应用 pthread | main 的 pthread_create | run_udp_application → udp_server_entry：原 UDP 回显 |
+| TCP 应用 pthread | main 的 pthread_create | run_tcp_application → tcp_server_entry：nepoll_wait 多连接回显 |
 
-input/output 表示该层的处理方向；入队操作使用 enqueue，队列对象使用 queue。
-udp_socket_input 匹配端点、复制正文、入接收队列并通知；tcp_socket_input 还负责连接状态推进。
-两侧 socket_output 都只是尝试推进发送，ARP 等待可能保留消息，不表示已经提交网卡或得到确认。
-accepted 保留原语义：应用创建的端点可被 fd 接口查找；子连接到 accept 时才向应用开放。
+仍是四个用户态业务角色，只需两个 DPDK lcore。ARP 定时回调在协议角色运行，不新增业务线程。
+KNI 模块有内核侧执行线程，EAL 也可能有辅助线程；四不是实测的进程/系统线程总数。
 
-修改前后均通过原有进程内检查：UDP 11542 项、TCP 3307 项；14 个头文件独立编译通过，
-DPDK 19.08.2 legacy 构建无警告。执行代码经词法对照，仅有约定的命名、转发和未用参数整理。
-main.c 原有 UDP 线程变量改动及公开 socket_api.h 保持原样；未执行真实网卡端到端验证。
-本次工作树基线、前后验收日志及修改映射保存在：
-/home/user/.codex/code-backups/myProgram-naming-20261021-4m1sltnv。
+## KNI 与所有权
 
-## 模块与执行角色
+- kni_init 在主线程创建单个 vEth0，rte_kni_init 的参数是接口数量 1，不能误传端口编号 0。
+- ARP 与 IPv4 来源映射由协议角色学习。UDP/TCP 继续交自写协议栈，其他完整报文交内核。
+- kni_send 接管单个 mbuf：KNI 接纳后交由其处理；拒绝或未初始化时释放。不会把同一批报文在循环中重复提交。
+- kni_receive 取得内核报文后调用 enqueue_tx_packet；该函数成功入 out、失败释放。out 仍仅由协议角色生产，NIC 仍仅由 I/O 角色操作。
+- 内核接口 up/down 的控制回调由 I/O 角色执行；down 后停止 NIC 访问，up 成功后恢复，启动失败保持停止状态。
+- 原 process_arp_packet、process_icmp_packet 及其报文构造代码保留，本轮默认分流不再调用它们，不同时产生两份 ARP/ICMP 应答。
 
-| 文件 | 职责 |
-|---|---|
-| main.c | 初始化；安排协议 worker，创建 UDP 和 TCP 两条应用 pthread |
-| common/net_arch.c/.h | 全局 in/out ring、待发报文入队、主 lcore 独占网卡 RX/TX |
-| common/packet.c/.h | 协议循环、报文分类、RX mbuf 释放、UDP/TCP 发送调度、定时器管理 |
-| protocol/arp.c/.h | ARP 收包处理、表管理、报文构造、定时探测；所有输出进入 out |
-| protocol/icmp.c/.h | 原有简化 ICMP 应答；所有输出进入 out |
-| protocol/udp.c/.h | UDP 报文检查、应用分发、ARP 查询、封包和输出 |
-| protocol/tcp.c/.h | TCP 长度与校验和检查、应用分发、ARP 查询、TCP 封包和输出 |
-| socket/socket_api.c/.h | 全部公开 n* 应用接口入口 |
-| socket/udp_socket.c/.h | 原有 UDP 端点、receive_queue/send_queue、阻塞收发与生命周期 |
-| socket/tcp_socket.c/.h | 监听与连接对象、四元组、TCP 状态、收发队列与阻塞应用接口 |
-| app/udp_app.c/.h | 使用 nsocket/nbind/nrecvfrom/nsendto 的 UDP 回显应用 |
-| app/tcp_app.c/.h | 使用 nsocket/nbind/nlisten/naccept/nrecv/nsend/nclose 的 TCP 回显应用 |
-| common/port_init.c/.h | 网卡及收发队列配置 |
-| common/app_state.c/.h | 本地 MAC/IP |
-| config.h | 保留的 ENABLE 定义、队列容量、应用端口、UDP/TCP 大小与 ARP 参数 |
+## 窗口检测的实际规则
 
-默认有四个业务执行角色（不是进程全部 OS 线程的实测总数）：
+统计 Ethernet 帧实际字节，不读取 buf_len 所代表的未使用缓冲区容量；支持跨 mbuf 段累计。
+按字节计数，避免非对齐宽读与尾部越界；不计算 log2(0)，零长度与全零/全一内容均保持有限数值。
 
-- 主 DPDK lcore：网卡收发，把收到的 mbuf 指针送入 in，把 out 中的报文提交给网卡。
-- 协议 DPDK lcore：packet_worker 从 in 取包，处理 ARP/ICMP/UDP/TCP，调度发送和定时器。
-- UDP pthread：pthread_create → run_udp_application → udp_server_entry，阻塞接收后回显。
-- TCP pthread：pthread_create → run_tcp_application → tcp_server_entry，接受连接后阻塞收发。
+保留参考：256 个报文的滚动窗口、原包含长度项的公式、score > 1200 时 rte_exit。
+首次评估与参考一致，发生在填满窗口后的下一包，即第 257 包。
+没有新增检测关闭选项，也没有将触发动作改成告警后继续。
 
-当前虚拟机有两个 CPU，因此应用使用普通 pthread，共享 CPU；只需两个 DPDK lcore。
-协议 worker 由 rte_eal_remote_launch 安排到 EAL 已创建的 worker lcore；
-ARP 定时器回调在协议 worker 执行，不增加业务线程。
+该公式不是已验证的攻击分类器：256 个 60 字节、相同比例的报文，得分约 2263.257，也会超过阈值。
+因此正常流量也可能使程序结束；这证明原规则被触发，不证明发生攻击。重启后窗口重新累计。
 
-## 数据路径
+## nepoll 接口、语义与生命周期
 
-~~~text
-接收：
-网卡 -> io_worker -> in -> packet_worker -> process_packets
-     -> udp_input -> udp_socket_input -> 端点 receive_queue
-     -> udp_socket_receive -> nrecvfrom 返回 -> udp_server_entry
+公开入口统一位于 socket/socket_api.c：
 
-发送：
-udp_server_entry -> nsendto -> udp_socket_send -> 端点 send_queue -> udp_socket_output
-                 -> udp_output -> 查 ARP / 构造 UDP 报文
-                 -> out -> io_worker -> 网卡
-~~~
+```c
+int nepoll_create(int size);
+int nepoll_ctl(int epoll_fd, int operation, int socket_fd, struct epoll_event *event);
+int nepoll_wait(int epoll_fd, struct epoll_event *events, int max_events, int timeout_ms);
+int nclose(int socket_fd);
+```
 
-in/out 传递 mbuf 指针；receive_queue/send_queue 传递拥有独立正文副本的 udp_datagram。
-端点按绑定的本地 IP/端口匹配。n* 是本项目的用户态接口，不是 Linux socket 系统调用。
+复用系统头文件定义的 struct epoll_event 和 EPOLL_CTL_* 常量，但函数实际操作本项目对象，不调用 Linux epoll。
+size 为正的兼容提示；本轮只允许一个实例。UDP fd 为 3～66，TCP 对象为 67～130，poll fd 为 131。
+TCP 总对象上限仍为 64，包括监听对象、半连接与尚未回收对象，不等于 64 个应用连接。
 
-TCP 接收复用 in：tcp_input → tcp_socket_input → 四元组对应的 tcp_socket
-→ receive_queue → tcp_socket_receive → nrecv 返回 → tcp_server_entry。
-TCP 发送复用 out：nsend → tcp_socket_send → send_queue → tcp_socket_output → tcp_output → out → io_worker。
-TCP 队列传递 tcp_segment；短读剩余数据保留在 receive_pending，ARP 等待的发送头保留在 send_pending。
+仅支持 TCP 的 EPOLLIN 与 ADD/MOD/DEL；其他事件模式返回 EOPNOTSUPP，不声称支持 EPOLLET、EPOLLOUT、嵌套实例或 UDP 事件。
+监听存在待接受连接时可读；连接存在未读正文或可返回 EOF 时可读。短读后仍保留通知，EOF 直到关闭前仍可读。
+同一 fd 不重复进入就绪链表，每次 wait 中至多返回一次；轮转就绪项，避免小 max_events 长期饿死其他连接。
+ADD/MOD 在 TCP 锁内取得当前可读状态，覆盖数据或握手先于注册发生的情况。
 
-监听对象收到 SYN 后建立独立连接对象并排入 SYN+ACK；第三次 ACK 合法后才唤醒 naccept。
-连接路径为 SYN_RCVD → ESTABLISHED → 对端 FIN → CLOSE_WAIT → nclose → LAST_ACK → 最后 ACK 释放。
-TCP 应用与 10 一样处理完当前连接才再次 accept，不包含 13 的 nepoll 多连接应用循环。
+锁顺序固定为 TCP 注册表锁 → poll 锁。wait 仅持 poll 锁，不反向访问 TCP。
+同一把 poll 锁保护注册树、就绪谓词、链表及 cond 等待，避免分裂谓词/通知导致丢唤醒。
+timeout_ms 为 0 时立即返回、负数时等待、正数时使用固定单调时钟截止时间；空就绪超时返回 0。
+关闭 socket 自动移除注册；关闭 poll 唤醒等待者并返回 EBADF，最后一个等待调用退出后才释放实例。
+应用保持单个事件消费者，并独占其监听/连接读取；现有阻塞接口未扩展为完整 POSIX 非阻塞接口。
 
-## 生命周期与线程边界
+## 命名与兼容范围
 
-- 协议处理函数借用 RX mbuf，返回后由 process_packets() 释放一次。
-- enqueue_tx_packet() 接管参数：入队成功交给 out，失败立即释放。
-- io_worker() 只释放网卡未接受的 TX mbuf；已接受的报文归 DPDK 管理。
-- in 满时，仅释放未成功入队的 RX mbuf。
-- 接收正文先复制到消息，再释放 RX mbuf；应用取得一条消息后释放消息。
-- nsendto() 复制应用数据并入队，返回表示入队成功，不表示对端收到。
-- 消息长度只表示 UDP 正文字节数；回显用 nrecvfrom() 返回值，支持二进制与空数据报。
-- 接收缓冲区过短时丢弃同一数据报剩余正文，不把 UDP 拆成字节流。
-- ARP 未命中时消息留在发送队列重试；每条消息最多每秒探测一次，五秒未输出则丢弃。
-- ARP 表查询、更新和定时回调都在协议 lcore，out 只有一个生产角色。
-- 端点注册表使用互斥锁；端点队列、等待谓词和通知使用端点锁。
-- nclose() 标记关闭并唤醒阻塞接收；活跃调用的引用结束后再释放队列和端点。
+既有函数、参数、字段名称保持不变。新增代码延续层次明确、同类对偶、snake_case、四空格和 if/else。
+receive/send 表示应用读写，input/output 表示各层推进；source/destination 描述报文方向，local/remote 描述连接身份。
+新增代码的长度/数量分别采用 length/count；保留 fd/ip/mac 等通用缩写。没有为形式对称新增无用途包装。
 
-TCP 注册表与状态使用独立互斥锁；阻塞等待使用同一把锁检查谓词并等待条件变量。
-TCP 关闭应用接口后仍保留连接和描述符，收到最后 ACK 且无等待者后才释放队列与对象。
-每个连接的 ring 名称包含描述符，避免原示例固定名称导致后续连接创建失败。
-nsend 返回复制入发送队列的字节数；一次最多接受 1460 字节，应用按返回值继续发送。
-nrecv 短读只返回实际复制数，尾部留在队头；数据全部取完后，才将对端 FIN 表示为 EOF。
+原有 UDP 数据报边界、TCP 短读、发送排队、ARP 等待、被动 FIN/EOF 与 LAST_ACK 回收沿用。
+仍未加入重传、乱序重组、拥塞控制、主动连接、完整主动关闭、RST 恢复、IPv4 分片重组或后台超时回收。
+原 nlisten backlog 参数仍不执行队列容量限制。继承的简化 ICMP 代码没有扩大修复范围。
 
-原 ARP 定时器周期和管理阈值保留，只将执行位置移动到协议 lcore。
+## 已完成的验证（2026-10-25）
 
-## 当前学习版本
+- DPDK 19.08.2 legacy 编译和链接无警告；18 个头文件独立编译通过。
+- 原 UDP 检查 11,542 项通过；原 TCP 检查 3,308 项通过，唯一验证流程调整是显式关闭新 poll 实例，结束事件循环。
+- 新增 3,114 项定向检查通过：KNI 混合分流与拒收释放、回程队列满、接口停启失败；检测实际长度、保护页边界、分段报文、零值、窗口与阈值；注册前就绪、短读、EOF、重复通知、MOD/DEL、满容量注册、公平轮转、多等待者关闭与描述符复用。
+- 运行真实 TCP 应用循环的进程内检查：第一个客户端保持空闲时第二个客户端仍能回显；1400 字节跨应用短读完整回显，两连接均完成 FIN/ACK 回收。
+- 独立进程实测原阈值退出：第 257 个 60 字节样本使 score=2263.257，退出码 1。
+- 上述网络检查使用无 PCI 探测的进程内报文与模拟 KNI/网卡调用；没有运行真实数据 NIC，也没有配置 vEth0 或发外部报文。
 
-06～10 的当前功能直接编译，代码不通过 ENABLE 宏选择分支。
-config.h 中保留原有 ENABLE_* 定义，修改其值不会关闭功能。
+基线、测试辅助源码、运行日志及本轮差异保存在：
+`/home/user/.codex/code-backups/myProgram-11-13-20261025-q40yzfql`。
+测试文件不进入学习项目，也没有提交或推送。
 
-- 当前源码逻辑 IP 为 192.168.27.8，UDP 回显监听 8889，TCP 回显监听 9999。
-- 只有匹配本地 IP 和绑定端口的数据报进入应用。
+## 由用户执行的真实通信验收
 
-本阶段先比较 main.c 和新增模块，再从 app/tcp_app.c 的应用流程追踪监听、连接和收发。
+已只读核实：数据 NIC 0000:0b:00.0 绑定 igb_uio；管理 NIC ens160 使用 192.168.27.128/24；模块 rte_kni 已加载。
+执行前仍核对设备归属，不改管理网卡。以下配置命令尚未执行。
 
-## 构建与验证
-
-~~~sh
+```sh
 cd /home/user/code/program/tcp-stack/myProgram
 make RTE_SDK=/home/user/code/2.network/2.4/dpdk/dpdk-stable-19.08.2 \
      RTE_TARGET=x86_64-native-linux-gcc
-~~~
-
-下面启动参数来自此前环境记录；运行前由用户核对当前数据网卡与可用 CPU：
-
-~~~sh
 sudo ./build/myProgram -l 0-1 -n 4 -w 0000:0b:00.0
-~~~
+```
 
-网络助手向 192.168.27.8:8889 发送数据，观察：
+保持程序运行，在另一个终端配置本次创建的接口：
 
-1. 启动日志中的 I/O、协议 lcore 与 UDP 监听地址。
-2. 客户端收到相同字节数、相同内容的回复。
-3. 先测无换行的 nihao，应收到五字节 6E 69 68 61 6F；再测包含 00 的二进制数据。
-4. ARP 表没有对端时，先解析邻居，再尝试 UDP 输出；超时会丢弃未发送消息。
+```sh
+sudo ip addr add 192.168.27.8/24 dev vEth0
+sudo ip link set vEth0 up
+ip -brief address show vEth0
+ip route get 192.168.27.1 from 192.168.27.8
+```
 
-TCP 验收：客户端连接 192.168.27.8:9999，发送 nihao 或含 00 的二进制数据，确认原字节回显；
-先关闭客户端发送方向，继续接收至 EOF，再重连，检查连接资源能重复使用。
-UDP 8889 继续使用上述原有输入确认回显。真实网卡和外部客户端验证由用户操作。
+最后一条检查内核到客户端的回程是否使用 vEth0。192.168.27.1 是此前 Windows 客户端地址，按实际客户端替换。
+管理网卡也在同一子网，若查询显示走 ens160，可由用户仅为客户端增加临时主机路由后复查：
 
-## 当前范围
+```sh
+sudo ip route add 192.168.27.1/32 dev vEth0 src 192.168.27.8
+# 撤销刚添加的路由：
+# sudo ip route del 192.168.27.1/32 dev vEth0
+```
 
-实现 IPv4 UDP 与 TCP 被动服务端接口；支持绑定本地 IP 或 INADDR_ANY。
-UDP 单条正文最多 1472 字节；TCP 单次 nsend 最多接受 1460 字节；只收发往本地逻辑 IP 的报文。
-TCP 接收支持解析 TCP 头长度与跳过选项，发送固定 20 字节 TCP 头，不协商选项。
-没有主动连接、完整主动关闭状态机、重传/超时回收、乱序重组、拥塞控制、窗口协商、RST 恢复或 nepoll。
-与原 10 一样，nlisten 的 backlog 参数尚不限制半连接/待接受连接队列；总 TCP 对象上限为 64。
-握手不完成或最后 ACK 丢失时，对象会保留；不把这些教学边界描述为可靠完整的 TCP。
-只接受无 IPv4 选项、未分片的 TCP 报文；不提供自动临时端口、完整 POSIX flags 或分片重组。
-保留原有简化 ICMP 应答和 ARP 表策略；不把本轮迭代扩展为完整协议栈修复。
+如果该 /32 路由已经存在，先检查其用途，不覆盖现有路由。
 
-## 2026-10-19 TCP 整合验收
+验收顺序与观察点：
 
-本轮使用现有 DPDK 19.08.2 legacy 构建，编译与链接通过，无编译警告。
-复用旧 UDP 检查并适配目录与接口位置，仅将“SOCK_STREAM 不支持”断言改为 SOCK_RAW 不支持：
-11542 项检查通过，覆盖 UDP 二进制/空数据报、截断、阻塞/关闭、ARP 重试、队列满、
-应用回显及部分 TX 接纳时的缓冲区所有权。
-新增 3307 项 TCP 检查通过，覆盖握手前 accept 阻塞、错误 ACK、短读顺序、连续发送序号、
-ARP 等待顺序、异常报文、带数据的 FIN、最后 ACK 校验、实际应用二进制回显，
-并连续完成 68 次建连和关闭，确认描述符与 ring 名称可复用。
-14 个头文件独立编译、现有格式规则及差异空白检查通过。
-以上为关闭 PCI 网卡探测的进程内验收；测试辅助文件保存在备份目录，不加入项目源码。
-本轮修改前的源码、Git 状态与差异保存在：
-/home/user/.codex/code-backups/myProgram-tcp10-20261019。
-本轮没有启动真实数据网卡或执行外部客户端端到端验证；编译和定向检查结果见同目录验收记录。
+1. 客户端 ping 192.168.27.8：确认 KNI/内核的 ARP 与 ICMP 双向路径；只创建了接口不算通过。
+2. UDP 8889 发送 nihao 及含 00 的二进制，确认回复字节完全相同。
+3. 两个 TCP 客户端同时连接 9999，先保持 A 空闲，让 B 发送并收到回显，再让 A 发送；两者应独立回显。
+4. 发送大于 1024 字节的数据验证应用短读后的后续通知；客户端必须累计读取 TCP 字节流，不能把一次 recv 当成完整消息。
+5. 客户端关闭发送方向并继续读取至 EOF，再重新连接，观察资源是否复用。
+6. 若程序出现 Reference DDoS threshold exceeded，则按上述原规则核对，不将其误记为 TCP 或 KNI 崩溃，也不据此认定攻击。
 
-## 保留的既有实现限制
-
-- ICMP 应答仍只构造固定长度的 Echo Reply 头部，没有复制请求中的 ICMP 正文。
-- ARP 定时探测要等协议线程调用 rte_timer_manage；原有较大的管理门限保留，
-  不能仅凭定时器的周期配置断言实际每秒探测。
-以上是源码可见的既有边界，本轮没有修改其功能。
+实际网络可能在窗口触发后中断，长时间、多次发包验收会受到原规则影响；不将进程内验证写成真实通信已成功。

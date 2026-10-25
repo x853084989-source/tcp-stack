@@ -5,6 +5,8 @@
 #include <rte_ethdev.h>
 
 #include "config.h"
+#include "common/ddos.h"
+#include "common/kni.h"
 
 static struct inout_ring packet_rings;
 
@@ -44,8 +46,15 @@ int enqueue_tx_packet(struct rte_mbuf *mbuf) {
 
 int io_worker(__attribute__((unused)) void *arg) {
     while (1) {
+        kni_handle_requests();
+        if (!kni_port_is_running()) {
+            continue;
+        }
         struct rte_mbuf *rx[BURST_SIZE];
         unsigned num_recvd = rte_eth_rx_burst(DPDK_PORT_ID, 0, rx, BURST_SIZE);
+        for (unsigned i = 0; i < num_recvd; i++) {
+            ddos_detect(rx[i]);
+        }
         unsigned queued = rte_ring_enqueue_burst(packet_rings.in, (void **)rx, num_recvd, NULL);
         for (unsigned i = queued; i < num_recvd; i++) {
             rte_pktmbuf_free(rx[i]);

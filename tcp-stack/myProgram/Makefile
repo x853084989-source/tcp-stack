@@ -18,6 +18,9 @@ SRCS-y := main.c \
           common/app_state.c \
           common/packet.c \
           common/net_arch.c \
+          common/kni.c \
+          common/ddos.c \
+          socket/event_poll.c \
           socket/udp_socket.c \
           socket/tcp_socket.c \
           socket/socket_api.c \
@@ -39,8 +42,8 @@ PKGCONF=pkg-config --define-prefix
 PC_FILE := $(shell $(PKGCONF) --path libdpdk)
 CFLAGS += -O3 -pthread -I$(PROJECT_ROOT) $(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
-LDFLAGS_SHARED = -pthread $(shell $(PKGCONF) --libs libdpdk)
-LDFLAGS_STATIC = -pthread -Wl,-Bstatic $(shell $(PKGCONF) --static --libs libdpdk)
+LDFLAGS_SHARED = -lm -pthread $(shell $(PKGCONF) --libs libdpdk)
+LDFLAGS_STATIC = -lm -pthread -Wl,-Bstatic $(shell $(PKGCONF) --static --libs libdpdk)
 
 build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
@@ -76,7 +79,7 @@ CFLAGS += -O3 -pthread -I$(PROJECT_ROOT)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += $(WERROR_FLAGS)
 
-LDLIBS += -lpthread
+LDLIBS += -lpthread -lm
 
 include $(RTE_SDK)/mk/rte.extapp.mk
 endif

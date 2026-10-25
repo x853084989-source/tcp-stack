@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/epoll.h>
 
 #include <rte_ip.h>
 #include <rte_mempool.h>
@@ -31,6 +32,10 @@ int tcp_socket_accept(int socket_fd, struct sockaddr *client_address, socklen_t 
 ssize_t tcp_socket_receive(int socket_fd, void *buffer, size_t buffer_length, int flags);
 ssize_t tcp_socket_send(int socket_fd, const void *payload, size_t payload_length, int flags);
 int tcp_socket_close(int socket_fd);
+
+/* Serializes registration plus current readiness with TCP state changes. */
+int tcp_socket_poll_control(int epoll_fd, int operation, int socket_fd,
+                            const struct epoll_event *event);
 
 /* Borrows checked input; updates connection state and copies accepted RX payload. */
 void tcp_socket_input(const struct rte_ipv4_hdr *ipv4_header, const struct rte_tcp_hdr *tcp_header,

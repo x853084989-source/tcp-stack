@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/epoll.h>
 
 /* User-space IPv4 interfaces; descriptors belong to this program, not Linux. */
 int nsocket(int domain, int type, int protocol);
@@ -17,5 +18,10 @@ ssize_t nrecvfrom(int socket_fd, void *buffer, size_t buffer_length, int flags,
 ssize_t nsendto(int socket_fd, const void *payload, size_t payload_length, int flags,
                 const struct sockaddr *destination_address, socklen_t address_length);
 int nclose(int socket_fd);
+
+/* User-space TCP readable notifications; timeout is milliseconds, negative means wait. */
+int nepoll_create(int size);
+int nepoll_ctl(int epoll_fd, int operation, int socket_fd, struct epoll_event *event);
+int nepoll_wait(int epoll_fd, struct epoll_event *events, int max_events, int timeout_ms);
 
 #endif /* MYPROGRAM_SOCKET_API_H */

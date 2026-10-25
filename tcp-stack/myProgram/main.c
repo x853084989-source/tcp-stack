@@ -10,6 +10,7 @@
 #include <rte_timer.h>
 
 #include "common/app_state.h"
+#include "common/kni.h"
 #include "protocol/arp.h"
 #include "config.h"
 #include "common/net_arch.h"
@@ -52,6 +53,9 @@ int main(int argc, char *argv[]) {
     }
     port_init(mbuf_pool);
     rte_eth_macaddr_get(DPDK_PORT_ID, (struct rte_ether_addr *)local_mac);
+    if (kni_init(mbuf_pool) != 0) {
+        rte_exit(EXIT_FAILURE, "Could not initialize KNI; check rte_kni and /dev/kni\n");
+    }
     rte_timer_subsystem_init();
 
     struct rte_timer arp_timer;

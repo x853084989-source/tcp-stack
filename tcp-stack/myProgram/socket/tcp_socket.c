@@ -14,6 +14,7 @@
 #include "common/app_state.h"
 #include "config.h"
 #include "protocol/tcp.h"
+#include "socket/event_poll.h"
 
 enum tcp_state {
     TCP_STATE_CLOSED,
@@ -54,6 +55,8 @@ struct tcp_socket {
 static struct tcp_socket *socket_list;
 static pthread_mutex_t socket_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static uint32_t socket_ready_events(struct tcp_socket *socket);
+
 static void free_segment(struct tcp_segment *segment) {
     if (segment != NULL) {
         rte_free(segment->payload);
@@ -67,6 +70,7 @@ static struct tcp_segment *create_segment(const void *payload, uint16_t payload_
         errno = ENOMEM;
         return NULL;
     }
+
     if (payload_length != 0) {
         segment->payload = rte_malloc("tcp_payload", payload_length, 0);
         if (segment->payload == NULL) {
@@ -114,6 +118,7 @@ static void destroy_socket(struct tcp_socket *socket) {
 }
 
 static void retire_socket(struct tcp_socket *socket) {
+    event_poll_remove(socket->fd);
     socket->retired = 1;
     socket->application_closed = 1;
     pthread_cond_broadcast(&socket->cond);
@@ -208,7 +213,12 @@ static int enqueue_tx(struct tcp_socket *socket, uint8_t flags, const void *payl
 int tcp_socket_create(void) {
     pthread_mutex_lock(&socket_list_mutex);
     struct tcp_socket *socket = create_socket();
-    int fd = socket == NULL ? -1 : socket->fd;
+    int fd;
+    if (socket == NULL) {
+        fd = -1;
+    } else {
+        fd = socket->fd;
+    }
     pthread_mutex_unlock(&socket_list_mutex);
     return fd;
 }
@@ -261,7 +271,12 @@ int tcp_socket_bind(int socket_fd, const struct sockaddr *address, socklen_t add
 int tcp_socket_listen(int socket_fd, __attribute__((unused)) int backlog) {
     pthread_mutex_lock(&socket_list_mutex);
     struct tcp_socket *socket = find_socket_by_fd(socket_fd);
-    int error = socket == NULL ? EBADF : 0;
+    int error;
+    if (socket == NULL) {
+        error = EBADF;
+    } else {
+        error = 0;
+    }
     if (socket != NULL) {
         if (!socket->bound ||
             (socket->state != TCP_STATE_CLOSED && socket->state != TCP_STATE_LISTEN)) {
@@ -279,8 +294,7 @@ int tcp_socket_listen(int socket_fd, __attribute__((unused)) int backlog) {
 }
 
 static struct tcp_socket *find_accept_ready(int listener_fd) {
-    for (struct tcp_socket *connection = socket_list; connection != NULL;
-         connection = connection->next) {
+    for (struct tcp_socket *connection = socket_list; connection != NULL;connection = connection->next) {
         if (connection->listener_fd == listener_fd && !connection->accepted &&
             !connection->retired &&
             (connection->state == TCP_STATE_ESTABLISHED ||
@@ -291,6 +305,35 @@ static struct tcp_socket *find_accept_ready(int listener_fd) {
     return NULL;
 }
 
+static uint32_t socket_ready_events(struct tcp_socket *socket) {
+    if (socket->application_closed || socket->retired) {
+        return 0;
+    }
+    if (socket->state == TCP_STATE_LISTEN) {
+        if (find_accept_ready(socket->fd) != NULL) {
+            return EPOLLIN;
+        }
+    } else if (socket->receive_pending != NULL || !rte_ring_empty(socket->receive_queue) ||
+               socket->state == TCP_STATE_CLOSE_WAIT) {
+        return EPOLLIN;
+    }
+    return 0;
+}
+
+int tcp_socket_poll_control(int epoll_fd, int operation, int socket_fd,
+                            const struct epoll_event *event) {
+    pthread_mutex_lock(&socket_list_mutex);
+    struct tcp_socket *socket = find_socket_by_fd(socket_fd);
+    if (socket == NULL) {
+        pthread_mutex_unlock(&socket_list_mutex);
+        return -1;
+    }
+    int result = event_poll_control(epoll_fd, operation, socket_fd, event,
+                                    socket_ready_events(socket));
+    pthread_mutex_unlock(&socket_list_mutex);
+    return result;
+}
+
 int tcp_socket_accept(int socket_fd, struct sockaddr *client_address, socklen_t *address_length) {
     if (client_address != NULL && address_length == NULL) {
         errno = EINVAL;
@@ -299,7 +342,11 @@ int tcp_socket_accept(int socket_fd, struct sockaddr *client_address, socklen_t 
     pthread_mutex_lock(&socket_list_mutex);
     struct tcp_socket *listener = find_socket_by_fd(socket_fd);
     if (listener == NULL || listener->state != TCP_STATE_LISTEN) {
-        errno = listener == NULL ? EBADF : EINVAL;
+        if (listener == NULL) {
+            errno = EBADF;
+        } else {
+            errno = EINVAL;
+        }
         pthread_mutex_unlock(&socket_list_mutex);
         return -1;
     }
@@ -313,14 +360,19 @@ int tcp_socket_accept(int socket_fd, struct sockaddr *client_address, socklen_t 
         errno = EBADF;
     } else {
         connection->accepted = 1;
+        event_poll_update(listener->fd, socket_ready_events(listener));
         fd = connection->fd;
         if (client_address != NULL) {
             struct sockaddr_in remote_address = {0};
             remote_address.sin_family = AF_INET;
             remote_address.sin_addr.s_addr = connection->remote_ip;
             remote_address.sin_port = connection->remote_port;
-            size_t count =
-                *address_length < sizeof(remote_address) ? *address_length : sizeof(remote_address);
+            size_t count;
+            if (*address_length < sizeof(remote_address)) {
+                count = *address_length;
+            } else {
+                count = sizeof(remote_address);
+            }
             rte_memcpy(client_address, &remote_address, count);
             *address_length = sizeof(remote_address);
         }
@@ -332,14 +384,22 @@ int tcp_socket_accept(int socket_fd, struct sockaddr *client_address, socklen_t 
 
 ssize_t tcp_socket_receive(int socket_fd, void *buffer, size_t buffer_length, int flags) {
     if ((buffer == NULL && buffer_length != 0) || flags != 0) {
-        errno = flags != 0 ? EOPNOTSUPP : EINVAL;
+        if (flags != 0) {
+            errno = EOPNOTSUPP;
+        } else {
+            errno = EINVAL;
+        }
         return -1;
     }
     pthread_mutex_lock(&socket_list_mutex);
     struct tcp_socket *socket = find_socket_by_fd(socket_fd);
     if (socket == NULL ||
         (socket->state != TCP_STATE_ESTABLISHED && socket->state != TCP_STATE_CLOSE_WAIT)) {
-        errno = socket == NULL ? EBADF : ENOTCONN;
+        if (socket == NULL) {
+            errno = EBADF;
+        } else {
+            errno = ENOTCONN;
+        }
         pthread_mutex_unlock(&socket_list_mutex);
         return -1;
     }
@@ -360,7 +420,12 @@ ssize_t tcp_socket_receive(int socket_fd, void *buffer, size_t buffer_length, in
     } else if (socket->receive_pending != NULL) {
         struct tcp_segment *segment = socket->receive_pending;
         size_t remaining = segment->payload_length - socket->receive_offset;
-        size_t count = buffer_length < remaining ? buffer_length : remaining;
+        size_t count;
+        if (buffer_length < remaining) {
+            count = buffer_length;
+        } else {
+            count = remaining;
+        }
         rte_memcpy(buffer, segment->payload + socket->receive_offset, count);
         socket->receive_offset += (uint16_t)count;
         copied = (ssize_t)count;
@@ -370,6 +435,7 @@ ssize_t tcp_socket_receive(int socket_fd, void *buffer, size_t buffer_length, in
             socket->receive_offset = 0;
         }
     }
+    event_poll_update(socket->fd, socket_ready_events(socket));
     /* CLOSE_WAIT returns EOF only after all bytes, including a partial head, are read. */
     release_socket(socket);
     pthread_mutex_unlock(&socket_list_mutex);
@@ -378,24 +444,44 @@ ssize_t tcp_socket_receive(int socket_fd, void *buffer, size_t buffer_length, in
 
 ssize_t tcp_socket_send(int socket_fd, const void *payload, size_t payload_length, int flags) {
     if ((payload == NULL && payload_length != 0) || flags != 0) {
-        errno = flags != 0 ? EOPNOTSUPP : EINVAL;
+        if (flags != 0) {
+            errno = EOPNOTSUPP;
+        } else {
+            errno = EINVAL;
+        }
         return -1;
     }
     pthread_mutex_lock(&socket_list_mutex);
     struct tcp_socket *socket = find_socket_by_fd(socket_fd);
     if (socket == NULL ||
         (socket->state != TCP_STATE_ESTABLISHED && socket->state != TCP_STATE_CLOSE_WAIT)) {
-        errno = socket == NULL ? EBADF : ENOTCONN;
+        if (socket == NULL) {
+            errno = EBADF;
+        } else {
+            errno = ENOTCONN;
+        }
         pthread_mutex_unlock(&socket_list_mutex);
         return -1;
     }
-    uint16_t count =
-        payload_length > TCP_MAX_PAYLOAD_SIZE ? TCP_MAX_PAYLOAD_SIZE : (uint16_t)payload_length;
-    int result =
-        count == 0 ? 0 : enqueue_tx(socket, RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG, payload, count);
+    uint16_t count;
+    if (payload_length > TCP_MAX_PAYLOAD_SIZE) {
+        count = TCP_MAX_PAYLOAD_SIZE;
+    } else {
+        count = (uint16_t)payload_length;
+    }
+    int result;
+    if (count == 0) {
+        result = 0;
+    } else {
+        result = enqueue_tx(socket, RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG, payload, count);
+    }
     pthread_mutex_unlock(&socket_list_mutex);
     /* Only a private copy in send_queue is guaranteed, not delivery or acknowledgement. */
-    return result == 0 ? (ssize_t)count : -1;
+    if (result == 0) {
+        return (ssize_t)count;
+    } else {
+        return -1;
+    }
 }
 
 int tcp_socket_close(int socket_fd) {
@@ -426,6 +512,7 @@ int tcp_socket_close(int socket_fd) {
             pthread_mutex_unlock(&socket_list_mutex);
             return -1;
         }
+        event_poll_remove(socket->fd);
         /* Same teaching scope as 10: the supported close path is peer FIN -> LAST_ACK. */
         socket->state = TCP_STATE_LAST_ACK;
         socket->application_closed = 1;
@@ -511,6 +598,7 @@ static void handle_established(struct tcp_socket *connection, const struct rte_t
     }
     enqueue_tx(connection, RTE_TCP_ACK_FLAG, NULL, 0);
     pthread_cond_broadcast(&connection->cond);
+    event_poll_update(connection->fd, socket_ready_events(connection));
 }
 
 void tcp_socket_input(const struct rte_ipv4_hdr *ipv4_header, const struct rte_tcp_hdr *tcp_header,
@@ -534,6 +622,7 @@ void tcp_socket_input(const struct rte_ipv4_hdr *ipv4_header, const struct rte_t
             struct tcp_socket *listener = find_socket_by_fd(socket->listener_fd);
             if (listener != NULL) {
                 pthread_cond_broadcast(&listener->cond);
+                event_poll_update(listener->fd, socket_ready_events(listener));
             }
             handle_established(socket, tcp_header, payload, payload_length);
         }

@@ -32,6 +32,9 @@ struct arp_table *arp_table_instance(void);
 /* The returned MAC address is borrowed from the ARP table. */
 uint8_t *arp_lookup_mac(uint32_t destination_ip);
 
+/* Protocol lcore learns mappings without generating a second ARP reply. */
+void arp_learn(uint32_t source_ip, const uint8_t *source_mac);
+
 struct rte_mbuf *build_arp_packet(struct rte_mempool *mbuf_pool, uint16_t opcode,
                                   uint8_t *destination_mac, uint32_t source_ip,
                                   uint32_t destination_ip);

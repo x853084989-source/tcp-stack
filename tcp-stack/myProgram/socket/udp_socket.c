@@ -281,8 +281,12 @@ ssize_t udp_socket_receive(int socket_fd, void *buffer, size_t buffer_length, in
 
     ssize_t copied = -1;
     if (error == 0 && datagram != NULL) {
-        size_t count =
-            buffer_length < datagram->payload_length ? buffer_length : datagram->payload_length;
+        size_t count;
+        if (buffer_length < datagram->payload_length) {
+            count = buffer_length;
+        } else {
+            count = datagram->payload_length;
+        }
         if (count != 0) {
             rte_memcpy(buffer, datagram->payload, count);
         }
@@ -291,9 +295,12 @@ ssize_t udp_socket_receive(int socket_fd, void *buffer, size_t buffer_length, in
             source_ipv4_address.sin_family = AF_INET;
             source_ipv4_address.sin_addr.s_addr = datagram->source_ip;
             source_ipv4_address.sin_port = datagram->source_port;
-            size_t addr_count = *address_length < sizeof(source_ipv4_address)
-                                    ? *address_length
-                                    : sizeof(source_ipv4_address);
+            size_t addr_count;
+            if (*address_length < sizeof(source_ipv4_address)) {
+                addr_count = *address_length;
+            } else {
+                addr_count = sizeof(source_ipv4_address);
+            }
             rte_memcpy(source_address, &source_ipv4_address, addr_count);
             *address_length = sizeof(source_ipv4_address);
         }
@@ -316,7 +323,11 @@ ssize_t udp_socket_send(int socket_fd, const void *payload, size_t payload_lengt
         return -1;
     }
     if (flags != 0 || payload_length > UDP_MAX_PAYLOAD_SIZE) {
-        errno = flags != 0 ? EOPNOTSUPP : EMSGSIZE;
+        if (flags != 0) {
+            errno = EOPNOTSUPP;
+        } else {
+            errno = EMSGSIZE;
+        }
         return -1;
     }
     const struct sockaddr_in *destination_ipv4_address =
@@ -339,10 +350,17 @@ ssize_t udp_socket_send(int socket_fd, const void *payload, size_t payload_lengt
     int error = 0;
     pthread_mutex_lock(&socket->mutex);
     if (socket->closing || !socket->bound) {
-        error = socket->closing ? EBADF : EINVAL;
+        if (socket->closing) {
+            error = EBADF;
+        } else {
+            error = EINVAL;
+        }
     } else {
-        datagram->source_ip =
-            socket->local_ip == htonl(INADDR_ANY) ? local_host_ip : socket->local_ip;
+        if (socket->local_ip == htonl(INADDR_ANY)) {
+            datagram->source_ip = local_host_ip;
+        } else {
+            datagram->source_ip = socket->local_ip;
+        }
         datagram->source_port = socket->local_port;
         datagram->destination_ip = destination_ipv4_address->sin_addr.s_addr;
         datagram->destination_port = destination_ipv4_address->sin_port;
@@ -443,15 +461,23 @@ void udp_socket_output(struct rte_mempool *mbuf_pool) {
         for (unsigned j = 0; j < budget; j++) {
             struct udp_datagram *datagram = NULL;
             pthread_mutex_lock(&socket->mutex);
-            int ret =
-                socket->closing ? -1 : rte_ring_dequeue(socket->send_queue, (void **)&datagram);
+            int ret;
+            if (socket->closing) {
+                ret = -1;
+            } else {
+                ret = rte_ring_dequeue(socket->send_queue, (void **)&datagram);
+            }
             pthread_mutex_unlock(&socket->mutex);
             if (ret != 0) {
                 break;
             }
             if (udp_output(mbuf_pool, datagram) == 1) {
                 pthread_mutex_lock(&socket->mutex);
-                ret = socket->closing ? -1 : rte_ring_enqueue(socket->send_queue, datagram);
+                if (socket->closing) {
+                    ret = -1;
+                } else {
+                    ret = rte_ring_enqueue(socket->send_queue, datagram);
+                }
                 pthread_mutex_unlock(&socket->mutex);
                 if (ret == 0) {
                     continue;
