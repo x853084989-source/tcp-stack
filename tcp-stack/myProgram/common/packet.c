@@ -82,7 +82,7 @@ int packet_worker(void *arg) {
     struct inout_ring *rings = packet_rings_instance();
     uint64_t last_timer_manage_tsc = 0;
 
-    while (1) {
+    while (1) { 
         struct rte_mbuf *mbufs[BURST_SIZE];
         unsigned count = rte_ring_dequeue_burst(rings->in, (void **)mbufs, BURST_SIZE, NULL);
         process_packets(mbuf_pool, mbufs, (int)count);

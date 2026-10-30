@@ -184,8 +184,8 @@ static struct tcp_socket *create_socket(void) {
     return socket;
 }
 
-static int enqueue_tx(struct tcp_socket *socket, uint8_t flags, const void *payload,
-                      uint16_t payload_length) {
+static int enqueue_tx_segment(struct tcp_socket *socket, uint8_t flags, const void *payload,
+                              uint16_t payload_length) {
     struct tcp_segment *segment = create_segment(payload, payload_length);
     if (segment == NULL) {
         return -1;
@@ -473,7 +473,7 @@ ssize_t tcp_socket_send(int socket_fd, const void *payload, size_t payload_lengt
     if (count == 0) {
         result = 0;
     } else {
-        result = enqueue_tx(socket, RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG, payload, count);
+        result = enqueue_tx_segment(socket, RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG, payload, count);
     }
     pthread_mutex_unlock(&socket_list_mutex);
     /* Only a private copy in send_queue is guaranteed, not delivery or acknowledgement. */
@@ -508,7 +508,7 @@ int tcp_socket_close(int socket_fd) {
     } else if (socket->state == TCP_STATE_CLOSED) {
         retire_socket(socket);
     } else {
-        if (enqueue_tx(socket, RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG, NULL, 0) != 0) {
+        if (enqueue_tx_segment(socket, RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG, NULL, 0) != 0) {
             pthread_mutex_unlock(&socket_list_mutex);
             return -1;
         }
@@ -564,12 +564,12 @@ static void handle_listen(struct tcp_socket *listener, const struct rte_ipv4_hdr
     connection->send_next = rand_r(&seed);
     connection->receive_next = ntohl(tcp_header->sent_seq) + 1;
     connection->state = TCP_STATE_SYN_RCVD;
-    if (enqueue_tx(connection, RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG, NULL, 0) != 0) {
+    if (enqueue_tx_segment(connection, RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG, NULL, 0) != 0) {
         retire_socket(connection);
     }
 }
 
-static void handle_established(struct tcp_socket *connection, const struct rte_tcp_hdr *tcp_header,
+static void  handle_established(struct tcp_socket *connection, const struct rte_tcp_hdr *tcp_header,
                                const uint8_t *payload, uint16_t payload_length) {
     const int has_fin = (tcp_header->tcp_flags & RTE_TCP_FIN_FLAG) != 0;
     if (payload_length == 0 && !has_fin) {
@@ -578,7 +578,7 @@ static void handle_established(struct tcp_socket *connection, const struct rte_t
     /* This example accepts only the next in-order segment; it never buffers gaps. */
     if (ntohl(tcp_header->sent_seq) != connection->receive_next ||
         (tcp_header->tcp_flags & RTE_TCP_SYN_FLAG) != 0) {
-        enqueue_tx(connection, RTE_TCP_ACK_FLAG, NULL, 0);
+        enqueue_tx_segment(connection, RTE_TCP_ACK_FLAG, NULL, 0);
         return;
     }
     if (payload_length != 0) {
@@ -596,7 +596,7 @@ static void handle_established(struct tcp_socket *connection, const struct rte_t
         connection->receive_next++;
         connection->state = TCP_STATE_CLOSE_WAIT;
     }
-    enqueue_tx(connection, RTE_TCP_ACK_FLAG, NULL, 0);
+    enqueue_tx_segment(connection, RTE_TCP_ACK_FLAG, NULL, 0);
     pthread_cond_broadcast(&connection->cond);
     event_poll_update(connection->fd, socket_ready_events(connection));
 }
@@ -632,7 +632,7 @@ void tcp_socket_input(const struct rte_ipv4_hdr *ipv4_header, const struct rte_t
         break;
     case TCP_STATE_CLOSE_WAIT:
         if ((tcp_header->tcp_flags & RTE_TCP_FIN_FLAG) != 0) {
-            enqueue_tx(socket, RTE_TCP_ACK_FLAG, NULL, 0);
+            enqueue_tx_segment(socket, RTE_TCP_ACK_FLAG, NULL, 0);
         }
         break;
     case TCP_STATE_LAST_ACK:

@@ -54,12 +54,12 @@ int tcp_server_entry(__attribute__((unused)) void *arg) {
             break;
         }
         for (int i = 0; i < ready_count; i++) {
-            int connection_fd = events[i].data.fd;
-            if (connection_fd == listen_fd) {
+            int socket_fd = events[i].data.fd;
+            if (socket_fd == listen_fd) {
                 struct sockaddr_in client_address = {0};
                 socklen_t address_length = sizeof(client_address);
-                connection_fd = naccept(listen_fd, (struct sockaddr *)&client_address,
-                                         &address_length);
+                int connection_fd =
+                    naccept(listen_fd, (struct sockaddr *)&client_address, &address_length);
                 if (connection_fd < 0) {
                     perror("naccept");
                     continue;
@@ -78,17 +78,17 @@ int tcp_server_entry(__attribute__((unused)) void *arg) {
             }
             /* One reader owns these descriptors; readiness cannot be consumed elsewhere. */
             ssize_t received_length =
-                nrecv(connection_fd, receive_buffer, sizeof(receive_buffer), 0);
+                nrecv(socket_fd, receive_buffer, sizeof(receive_buffer), 0);
             if (received_length <= 0) {
                 if (received_length < 0) {
                     perror("nrecv");
                 }
-                close_connection(epoll_fd, connection_fd, connections);
+                close_connection(epoll_fd, socket_fd, connections);
                 continue;
             }
             size_t sent_length = 0;
             while (sent_length < (size_t)received_length) {
-                ssize_t count = nsend(connection_fd, receive_buffer + sent_length,
+                ssize_t count = nsend(socket_fd, receive_buffer + sent_length,
                                       (size_t)received_length - sent_length, 0);
                 if (count <= 0) {
                     perror("nsend");
@@ -97,7 +97,7 @@ int tcp_server_entry(__attribute__((unused)) void *arg) {
                 sent_length += (size_t)count;
             }
             if (sent_length != (size_t)received_length) {
-                close_connection(epoll_fd, connection_fd, connections);
+                close_connection(epoll_fd, socket_fd, connections);
             }
         }
     }
