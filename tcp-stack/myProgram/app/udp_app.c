@@ -4,7 +4,7 @@
 #include <errno.h>
 #include <stdio.h>
 
-#include "common/app_state.h"
+#include "network_interface.h"
 #include "config.h"
 #include "socket/socket_api.h"
 

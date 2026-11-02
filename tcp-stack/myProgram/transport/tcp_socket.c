@@ -11,9 +11,9 @@
 #include <rte_memcpy.h>
 #include <rte_ring.h>
 
-#include "common/app_state.h"
+#include "network_interface.h"
 #include "config.h"
-#include "protocol/tcp.h"
+#include "transport/tcp.h"
 #include "socket/event_poll.h"
 
 enum tcp_state {
@@ -194,8 +194,8 @@ static int enqueue_tx_segment(struct tcp_socket *socket, uint8_t flags, const vo
     segment->destination_ip = socket->remote_ip;
     segment->source_port = socket->local_port;
     segment->destination_port = socket->remote_port;
-    segment->sequence_number = socket->send_next;
-    segment->acknowledgement_number = socket->receive_next;
+    segment->seq_num = socket->send_next;
+    segment->ack_num = socket->receive_next;
     segment->tcp_flags = flags;
     if (rte_ring_enqueue(socket->send_queue, segment) != 0) {
         free_segment(segment);

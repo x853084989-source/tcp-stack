@@ -17,8 +17,8 @@ struct tcp_segment {
     uint32_t destination_ip;
     uint16_t source_port;
     uint16_t destination_port;
-    uint32_t sequence_number;
-    uint32_t acknowledgement_number;
+    uint32_t seq_num;
+    uint32_t ack_num;
     uint8_t tcp_flags;
     uint16_t payload_length;
     uint8_t *payload;

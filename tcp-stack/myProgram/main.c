@@ -9,13 +9,14 @@
 #include <rte_mempool.h>
 #include <rte_timer.h>
 
-#include "common/app_state.h"
-#include "common/kni.h"
-#include "protocol/arp.h"
+#include "network_interface.h"
+#include "dpdk/kni.h"
+#include "link/arp.h"
 #include "config.h"
-#include "common/net_arch.h"
-#include "common/packet.h"
-#include "common/port_init.h"
+#include "link/frame_queue.h"
+#include "link/io_worker.h"
+#include "protocol_worker.h"
+#include "dpdk/port_init.h"
 #include "app/tcp_app.h"
 #include "app/udp_app.h"
 
@@ -48,7 +49,7 @@ int main(int argc, char *argv[]) {
         rte_exit(EXIT_FAILURE, "Could not create mbuf pool\n");
     }
 
-    if (net_arch_init() != 0) {
+    if (frame_queues_init() != 0) {
         rte_exit(EXIT_FAILURE, "Could not create packet rings\n");
     }
     port_init(mbuf_pool);
@@ -67,7 +68,7 @@ int main(int argc, char *argv[]) {
         rte_exit(EXIT_FAILURE, "Could not start ARP timer\n");
     }
 
-    ret = rte_eal_remote_launch(packet_worker, mbuf_pool, protocol_lcore);
+    ret = rte_eal_remote_launch(protocol_worker, mbuf_pool, protocol_lcore);
     if (ret != 0) {
         rte_exit(EXIT_FAILURE, "Could not launch protocol lcore\n");
     }

@@ -35,12 +35,12 @@ uint8_t *arp_lookup_mac(uint32_t destination_ip);
 /* Protocol lcore learns mappings without generating a second ARP reply. */
 void arp_learn(uint32_t source_ip, const uint8_t *source_mac);
 
-struct rte_mbuf *build_arp_packet(struct rte_mempool *mbuf_pool, uint16_t opcode,
+struct rte_mbuf *build_arp_frame(struct rte_mempool *mbuf_pool, uint16_t opcode,
                                   uint8_t *destination_mac, uint32_t source_ip,
                                   uint32_t destination_ip);
 
 /* Borrows the received header; the packet loop releases the received mbuf. */
-void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_header);
+void arp_input(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_header);
 void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg);
 
 #endif /* MYPROGRAM_ARP_H */

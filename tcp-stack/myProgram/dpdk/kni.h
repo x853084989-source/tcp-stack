@@ -7,7 +7,7 @@
 int kni_init(struct rte_mempool *mbuf_pool);
 /* Consumes one packet: transfers it to the kernel, or frees it on failure. */
 int kni_send(struct rte_mbuf *mbuf);
-/* Protocol lcore: moves kernel packets to out; does not access NIC queues. */
+/* Protocol lcore: enqueues kernel frames for sending; does not access NIC queues. */
 void kni_receive(void);
 /* I/O lcore only: control callbacks may stop/restart its NIC. */
 void kni_handle_requests(void);

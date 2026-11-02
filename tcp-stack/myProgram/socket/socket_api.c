@@ -4,9 +4,9 @@
 #include <netinet/in.h>
 
 #include "config.h"
-#include "socket/tcp_socket.h"
+#include "transport/tcp_socket.h"
 #include "socket/event_poll.h"
-#include "socket/udp_socket.h"
+#include "transport/udp_socket.h"
 
 int nsocket(int domain, int type, int protocol) {
     if (domain == AF_INET && type == SOCK_DGRAM && (protocol == 0 || protocol == IPPROTO_UDP)) {

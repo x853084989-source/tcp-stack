@@ -53,11 +53,11 @@ int ddos_sample_packet(struct ddos_detector *detector, const struct rte_mbuf *mb
     if (remaining_length != 0 || segment != NULL || segment_count != mbuf->nb_segs) {
         return -1;
     }
-    struct ddos_sample *sample = &detector->samples[detector->next_sample];
+    struct ddos_sample *sample = &detector->samples[detector->write_index];
     sample->set_bits = set_bits;
     sample->total_bits = total_bits;
     sample->entropy = calculate_entropy(set_bits, total_bits);
-    detector->next_sample = (detector->next_sample + 1) % DDOS_WINDOW_SIZE;
+    detector->write_index = (detector->write_index + 1) % DDOS_WINDOW_SIZE;
     /* Match the reference: first evaluate on the packet after the window fills. */
     if (detector->sample_count < DDOS_WINDOW_SIZE) {
         detector->sample_count++;

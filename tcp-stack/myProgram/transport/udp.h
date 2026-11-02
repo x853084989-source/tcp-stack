@@ -8,12 +8,12 @@
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 
-struct udp_datagram;
+struct udp_segment;
 
-/* Borrows mbuf and its headers; process_packets() releases the received mbuf. */
+/* Borrows mbuf and its headers; ethernet_input() releases the received mbuf. */
 void udp_input(struct rte_mbuf *mbuf, struct rte_ipv4_hdr *ipv4_header);
 
-/* 0: output queued, 1: retry after ARP, -1: dropped. Caller owns datagram. */
-int udp_output(struct rte_mempool *mbuf_pool, struct udp_datagram *datagram);
+/* 0: output queued, 1: retry after ARP, -1: dropped. Caller owns segment. */
+int udp_output(struct rte_mempool *mbuf_pool, struct udp_segment *segment);
 
 #endif /* MYPROGRAM_UDP_H */

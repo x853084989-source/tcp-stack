@@ -101,6 +101,7 @@ int tcp_server_entry(__attribute__((unused)) void *arg) {
             }
         }
     }
+
     for (unsigned i = 0; i < MAX_TCP_SOCKETS; i++) {
         if (connections[i]) {
             nclose(TCP_FIRST_FD + (int)i);

@@ -1,5 +1,5 @@
-#ifndef MYPROGRAM_APP_STATE_H
-#define MYPROGRAM_APP_STATE_H
+#ifndef MYPROGRAM_NETWORK_INTERFACE_H
+#define MYPROGRAM_NETWORK_INTERFACE_H
 
 #include <stdint.h>
 #include <rte_ether.h>
@@ -8,4 +8,4 @@
 extern uint32_t local_host_ip;
 extern uint8_t local_mac[RTE_ETHER_ADDR_LEN];
 
-#endif /* MYPROGRAM_APP_STATE_H */
+#endif /* MYPROGRAM_NETWORK_INTERFACE_H */

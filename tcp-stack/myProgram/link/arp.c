@@ -10,9 +10,9 @@
 #include <rte_malloc.h>
 #include <rte_memcpy.h>
 
-#include "common/app_state.h"
+#include "network_interface.h"
 #include "config.h"
-#include "common/net_arch.h"
+#include "link/frame_queue.h"
 
 #define LL_ADD(item, list)                                                                         \
     do {                                                                                           \
@@ -55,10 +55,10 @@ uint8_t *arp_lookup_mac(uint32_t destination_ip) {
     return NULL;
 }
 
-static int encode_arp_packet(uint8_t *packet_data, uint16_t opcode, uint8_t *destination_mac,
+static int arp_encode_frame(uint8_t *frame_data, uint16_t opcode, uint8_t *destination_mac,
                              uint32_t source_ip, uint32_t destination_ip) {
     // 1 ethhdr
-    struct rte_ether_hdr *ethernet_header = (struct rte_ether_hdr *)packet_data;
+    struct rte_ether_hdr *ethernet_header = (struct rte_ether_hdr *)frame_data;
     rte_memcpy(ethernet_header->s_addr.addr_bytes, local_mac, RTE_ETHER_ADDR_LEN);
 
     if (!strncmp((const char *)destination_mac, (const char *)broadcast_arp_mac,
@@ -88,21 +88,21 @@ static int encode_arp_packet(uint8_t *packet_data, uint16_t opcode, uint8_t *des
     return 0;
 }
 
-struct rte_mbuf *build_arp_packet(struct rte_mempool *mbuf_pool, uint16_t opcode,
+struct rte_mbuf *build_arp_frame(struct rte_mempool *mbuf_pool, uint16_t opcode,
                                   uint8_t *destination_mac, uint32_t source_ip,
                                   uint32_t destination_ip) {
-    const unsigned total_length = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
+    const unsigned frame_length = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
 
     struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
     if (!mbuf) {
         rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc\n");
     }
 
-    mbuf->pkt_len = total_length;
-    mbuf->data_len = total_length;
+    mbuf->pkt_len = frame_length;
+    mbuf->data_len = frame_length;
 
-    uint8_t *pkt_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
-    encode_arp_packet(pkt_data, opcode, destination_mac, source_ip, destination_ip);
+    uint8_t *frame_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
+    arp_encode_frame(frame_data, opcode, destination_mac, source_ip, destination_ip);
 
     return mbuf;
 }
@@ -124,20 +124,20 @@ void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *a
         uint8_t *destination_mac = arp_lookup_mac(destination_ip);
         if (destination_mac == NULL) {
             arpbuf =
-                build_arp_packet(mbuf_pool, RTE_ARP_OP_REQUEST, broadcast_arp_mac, local_host_ip,
+                build_arp_frame(mbuf_pool, RTE_ARP_OP_REQUEST, broadcast_arp_mac, local_host_ip,
                                  destination_ip); // ARP table dont have dstmac, send arp request
         } else {
             printf("target ip and its mac address is searched in arp table successfully: %s \n",
                    inet_ntoa(addr));
-            arpbuf = build_arp_packet(mbuf_pool, RTE_ARP_OP_REQUEST, destination_mac, local_host_ip,
+            arpbuf = build_arp_frame(mbuf_pool, RTE_ARP_OP_REQUEST, destination_mac, local_host_ip,
                                       destination_ip); // ARP table have dstmac, send arp request
         }
 
-        enqueue_tx_packet(arpbuf);
+        enqueue_tx_frame(arpbuf);
     }
 }
 
-void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_header) {
+void arp_input(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_header) {
     int ret;
     if (arp_header->arp_data.arp_tip == local_host_ip) {
         struct in_addr addr;
@@ -150,11 +150,11 @@ void process_arp_packet(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_h
             // ARP reply
             // check table
 
-            struct rte_mbuf *arp_reply_buf = build_arp_packet(
+            struct rte_mbuf *arp_reply_buf = build_arp_frame(
                 mbuf_pool, RTE_ARP_OP_REPLY, arp_header->arp_data.arp_sha.addr_bytes,
                 arp_header->arp_data.arp_tip, arp_header->arp_data.arp_sip);
 
-            ret = enqueue_tx_packet(arp_reply_buf);
+            ret = enqueue_tx_frame(arp_reply_buf);
 
             if (ret == 0) {
                 printf(" ARP reply queued for IP: %s ] \n", inet_ntoa(addr));

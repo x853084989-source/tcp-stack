@@ -8,7 +8,7 @@
 
 #include <rte_mempool.h>
 
-struct udp_datagram {
+struct udp_segment {
     /* Addresses and ports stay in network byte order; payload_length is payload bytes. */
     uint32_t source_ip;
     uint32_t destination_ip;

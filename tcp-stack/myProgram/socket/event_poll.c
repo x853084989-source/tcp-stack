@@ -7,7 +7,7 @@
 
 #include <rte_malloc.h>
 
-#include "common/nty_tree.h"
+#include "third_party/nty_tree.h"
 #include "config.h"
 
 struct event_poll_item {

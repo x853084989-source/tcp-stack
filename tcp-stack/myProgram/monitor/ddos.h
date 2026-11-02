@@ -15,7 +15,7 @@ struct ddos_sample {
 
 struct ddos_detector {
     struct ddos_sample samples[DDOS_WINDOW_SIZE];
-    unsigned next_sample;
+    unsigned write_index;
     unsigned sample_count;
 };
 

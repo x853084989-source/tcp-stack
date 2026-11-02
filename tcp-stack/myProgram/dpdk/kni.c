@@ -7,7 +7,7 @@
 #include <rte_ethdev.h>
 #include <rte_kni.h>
 
-#include "common/net_arch.h"
+#include "link/frame_queue.h"
 #include "config.h"
 
 static struct rte_kni *kernel_interface;
@@ -74,7 +74,7 @@ void kni_receive(void) {
     struct rte_mbuf *mbufs[BURST_SIZE];
     unsigned packet_count = rte_kni_rx_burst(kernel_interface, mbufs, BURST_SIZE);
     for (unsigned i = 0; i < packet_count; i++) {
-        enqueue_tx_packet(mbufs[i]);
+        enqueue_tx_frame(mbufs[i]);
     }
 }
 

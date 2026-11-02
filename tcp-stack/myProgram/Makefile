@@ -10,19 +10,22 @@ PROJECT_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
 # all source are stored in SRCS-y
 SRCS-y := main.c \
-          protocol/arp.c \
-          protocol/udp.c \
-          protocol/icmp.c \
-          protocol/tcp.c \
-          common/port_init.c \
-          common/app_state.c \
-          common/packet.c \
-          common/net_arch.c \
-          common/kni.c \
-          common/ddos.c \
+          protocol_worker.c \
+          network_interface.c \
+          transport/tcp.c \
+          transport/udp.c \
+          transport/tcp_socket.c \
+          transport/udp_socket.c \
+          network/ipv4.c \
+          network/icmp.c \
+          link/ethernet.c \
+          link/arp.c \
+          link/frame_queue.c \
+          link/io_worker.c \
+          dpdk/port_init.c \
+          dpdk/kni.c \
+          monitor/ddos.c \
           socket/event_poll.c \
-          socket/udp_socket.c \
-          socket/tcp_socket.c \
           socket/socket_api.c \
           app/udp_app.c \
           app/tcp_app.c
