@@ -10,7 +10,7 @@
 #include <rte_ip.h>
 #include <rte_mempool.h>
 #include <rte_tcp.h>
-
+#include <sys/queue.h>
 /* Addresses/ports are network order; sequence numbers and lengths are host order. */
 struct tcp_segment {
     uint32_t source_ip;
@@ -23,6 +23,8 @@ struct tcp_segment {
     uint16_t payload_length;
     uint8_t *payload;
     uint64_t next_arp_retry_tsc;
+
+    TAILQ_ENTRY(tcp_segment) unack_link;
 };
 
 int tcp_socket_create(void);
@@ -40,7 +42,7 @@ int tcp_socket_poll_control(int epoll_fd, int operation, int socket_fd,
 /* Borrows checked input; updates connection state and copies accepted RX payload. */
 void tcp_socket_input(const struct rte_ipv4_hdr *ipv4_header, const struct rte_tcp_hdr *tcp_header,
                       const uint8_t *payload, uint16_t payload_length);
-/* Protocol lcore advances pending sends; ARP misses retain the head segment. */
+/* Protocol lcore advances new sends and checks RTO; records stay owned until ACK/close. */
 void tcp_socket_output(struct rte_mempool *mbuf_pool);
 
 #endif /* MYPROGRAM_TCP_SOCKET_H */
