@@ -1,3 +1,5 @@
+/* 本地接口身份：IP按网络字节序保存，MAC在网卡初始化后读取。 */
+
 #include "network_interface.h"
 
 #include <rte_byteorder.h>

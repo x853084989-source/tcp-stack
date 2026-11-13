@@ -1,3 +1,5 @@
+/* 设置本项目使用的单RX队列、单TX队列和接收mbuf池，再启动网卡端口。 */
+
 #include "port_init.h"
 
 #include <stddef.h>
@@ -14,6 +16,7 @@
 static const struct rte_eth_conf port_conf_default = {
     .rxmode = {.max_rx_pkt_len = RTE_ETHER_MAX_LEN}};
 
+/* mbuf_pool供RX队列使用；先配置端口、建RX/TX描述符队列，再启动设备。 */
 int port_init(struct rte_mempool *mbuf_pool) {
     uint16_t nb_sys_ports = rte_eth_dev_count_avail();
 
@@ -21,6 +24,7 @@ int port_init(struct rte_mempool *mbuf_pool) {
         rte_exit(EXIT_FAILURE, "No Supported eth found\n");
     }
 
+    /* dev_info由驱动查询填充，提供设备默认TX配置；不是新的网卡对象或一条数据包。 */
     struct rte_eth_dev_info dev_info;
     rte_eth_dev_info_get(DPDK_PORT_ID, &dev_info);
 
@@ -30,6 +34,7 @@ int port_init(struct rte_mempool *mbuf_pool) {
     struct rte_eth_conf port_conf = port_conf_default;
     rte_eth_dev_configure(DPDK_PORT_ID, num_rx_queues, num_tx_queues, &port_conf);
 
+    /* 建立端口0上的RX队列0，1024为描述符数量，mbuf_pool提供收到报文时的缓冲区。 */
     int ret = rte_eth_rx_queue_setup(DPDK_PORT_ID, 0, 1024, rte_eth_dev_socket_id(DPDK_PORT_ID),
                                      NULL, mbuf_pool);
 

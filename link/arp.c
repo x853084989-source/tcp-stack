@@ -1,3 +1,8 @@
+/*
+ * ARP映射、请求组包与周期探测；默认接收路径学习映射后把ARP帧交给KNI。
+ * arp_input保留旧的自行应答入口，不能据此认为当前所有ARP接收都经过它。
+ */
+
 #include "arp.h"
 
 #include <arpa/inet.h>
@@ -14,6 +19,7 @@
 #include "config.h"
 #include "link/frame_queue.h"
 
+/* 头插双向链表宏；只连接已有节点，不分配内存或自动加锁，调用方承担节点寿命。 */
 #define LL_ADD(item, list)                                                                         \
     do {                                                                                           \
         item->prev = NULL;                                                                         \
@@ -28,6 +34,7 @@ static uint8_t broadcast_arp_mac[RTE_ETHER_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 
 static struct arp_table *arp_table = NULL;
 static int arp_request_count = 1;
 
+/* 懒创建唯一ARP表；正常运行中由协议lcore访问，不另加跨线程锁。 */
 struct arp_table *arp_table_instance(void) {
     if (arp_table == NULL) {
         arp_table = rte_malloc("arp table", sizeof(struct arp_table), 0);
@@ -42,6 +49,7 @@ struct arp_table *arp_table_instance(void) {
     return arp_table;
 }
 
+/* 查询网络序目标IP，命中返回表内MAC的借用指针；未命中让上层进入ARP等待路径。 */
 uint8_t *arp_lookup_mac(uint32_t destination_ip) {
     struct arp_table_item *iter;
     struct arp_table *table = arp_table_instance();
@@ -55,6 +63,7 @@ uint8_t *arp_lookup_mac(uint32_t destination_ip) {
     return NULL;
 }
 
+/* 在调用方分配的连续缓冲区填写以太网头和ARP头；只编码，不发送、不释放缓冲区。 */
 static int arp_encode_frame(uint8_t *frame_data, uint16_t opcode, uint8_t *destination_mac,
                              uint32_t source_ip, uint32_t destination_ip) {
     // 1 ethhdr
@@ -69,6 +78,7 @@ static int arp_encode_frame(uint8_t *frame_data, uint16_t opcode, uint8_t *desti
     } else {
         rte_memcpy(ethernet_header->d_addr.addr_bytes, destination_mac, RTE_ETHER_ADDR_LEN);
     }
+
     ethernet_header->ether_type = htons(RTE_ETHER_TYPE_ARP);
 
     // 2 arp
@@ -88,6 +98,7 @@ static int arp_encode_frame(uint8_t *frame_data, uint16_t opcode, uint8_t *desti
     return 0;
 }
 
+/* 从mbuf_pool取得一帧并编码ARP；返回后由调用方交给发送队列，分配失败沿用退出策略。 */
 struct rte_mbuf *build_arp_frame(struct rte_mempool *mbuf_pool, uint16_t opcode,
                                   uint8_t *destination_mac, uint32_t source_ip,
                                   uint32_t destination_ip) {
@@ -107,9 +118,15 @@ struct rte_mbuf *build_arp_frame(struct rte_mempool *mbuf_pool, uint16_t opcode,
     return mbuf;
 }
 
+/*
+ * rte_timer回调：tim是到期定时器，arg是main注册时传入的mbuf池。
+ * 回调在协议lcore调用rte_timer_manage时执行，按本机/24网段探测，不是独立定时线程。
+ */
 void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg) {
     struct rte_mempool *mbuf_pool = (struct rte_mempool *)arg;
+
     /* Build /24 targets in host byte order, then convert for ARP and lookup. */
+    /* 先转主机序再取/24网段与主机号，枚举后转回网络序；避免不同端序机器拼出错误目标IP。 */
     const uint32_t subnet = ntohl(local_host_ip) & 0xFFFFFF00U;
 
     int i = 0;
@@ -122,6 +139,8 @@ void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *a
 
         struct rte_mbuf *arpbuf = NULL;
         uint8_t *destination_mac = arp_lookup_mac(destination_ip);
+
+        /* 尚未学习目标MAC时发广播ARP；命中时沿用旧代码发单播请求刷新，并非直接发送业务正文。 */
         if (destination_mac == NULL) {
             arpbuf =
                 build_arp_frame(mbuf_pool, RTE_ARP_OP_REQUEST, broadcast_arp_mac, local_host_ip,
@@ -137,6 +156,7 @@ void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *a
     }
 }
 
+/* 保留的旧ARP请求应答/回复入表逻辑；当前ethernet_input主要学习后交KNI，并不调用此入口。 */
 void arp_input(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_header) {
     int ret;
     if (arp_header->arp_data.arp_tip == local_host_ip) {
@@ -147,6 +167,7 @@ void arp_input(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_header) {
         if (arp_header->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
             addr.s_addr = arp_header->arp_data.arp_sip;
             printf(" Received ARP request from IP: %s\n", inet_ntoa(addr));
+
             // ARP reply
             // check table
 
@@ -165,6 +186,7 @@ void arp_input(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_header) {
             addr.s_addr = arp_header->arp_data.arp_sip;
             printf(" Received ARP reply: ");
             printf(" ARP reply from IP: %s]\n", inet_ntoa(addr));
+
             // save in ARP table
             struct arp_table *table = arp_table_instance();
             uint8_t *mac_addr = arp_lookup_mac(arp_header->arp_data.arp_sip);
@@ -201,22 +223,30 @@ void arp_input(struct rte_mempool *mbuf_pool, struct rte_arp_hdr *arp_header) {
     }
 }
 
+/* 从已检查的以太网/IPv4来源学习映射；已有IP则更新MAC，否则新增节点。 */
 void arp_learn(uint32_t source_ip, const uint8_t *source_mac) {
     static const uint8_t empty_mac[RTE_ETHER_ADDR_LEN];
+
+    /* 丢弃无效/本机IP及组播、广播或全0来源MAC，避免把这些地址当成可用单播下一跳。 */
     if (source_ip == 0 || source_ip == local_host_ip || (source_mac[0] & 1) != 0 ||
         memcmp(source_mac, empty_mac, RTE_ETHER_ADDR_LEN) == 0) {
         return;
     }
+
     struct arp_table *table = arp_table_instance();
     uint8_t *mac = arp_lookup_mac(source_ip);
+
+    /* 同一IP已存在时更新原MAC，不重复加节点；地址变化后后续组包就能使用新映射。 */
     if (mac != NULL) {
         rte_memcpy(mac, source_mac, RTE_ETHER_ADDR_LEN);
         return;
     }
+
     struct arp_table_item *entry = rte_zmalloc("arp_table_item", sizeof(*entry), 0);
     if (entry == NULL) {
         return;
     }
+
     entry->ip = source_ip;
     rte_memcpy(entry->mac_addr, source_mac, RTE_ETHER_ADDR_LEN);
     LL_ADD(entry, table->top_table);

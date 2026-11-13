@@ -1,3 +1,5 @@
+/* 本地接口共享配置；组包时直接使用网络序IP，避免重复转换字节序。 */
+
 #ifndef MYPROGRAM_NETWORK_INTERFACE_H
 #define MYPROGRAM_NETWORK_INTERFACE_H
 

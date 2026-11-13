@@ -1,3 +1,5 @@
+/* UDP回显应用：每次recvfrom取得一个数据报及来源地址，再向该来源发送。 */
+
 #include "udp_app.h"
 
 #include <arpa/inet.h>
@@ -8,12 +10,14 @@
 #include "config.h"
 #include "socket/socket_api.h"
 
+/* 应用线程的UDP回显循环；接收长度与来源地址决定回显内容和目标，不按字符串处理正文。 */
 int udp_server_entry(__attribute__((unused)) void *arg) {
     int socket_fd = nsocket(AF_INET, SOCK_DGRAM, 0);
     if (socket_fd < 0) {
         perror("nsocket");
         return -1;
     }
+
     struct sockaddr_in local_address = {0};
     local_address.sin_family = AF_INET;
     local_address.sin_addr.s_addr = local_host_ip;
@@ -23,6 +27,7 @@ int udp_server_entry(__attribute__((unused)) void *arg) {
         nclose(socket_fd);
         return -1;
     }
+
     printf("UDP application listening on %s:%u\n", inet_ntoa(local_address.sin_addr), UDP_APP_PORT);
 
     uint8_t receive_buffer[UDP_MAX_PAYLOAD_SIZE];
@@ -31,16 +36,21 @@ int udp_server_entry(__attribute__((unused)) void *arg) {
         socklen_t address_length = sizeof(client_address);
         ssize_t received_length = nrecvfrom(socket_fd, receive_buffer, sizeof(receive_buffer), 0,
                                             (struct sockaddr *)&client_address, &address_length);
+
+        /* 只把负数当错误；UDP允许0字节数据报，长度0仍应走回显，不能按TCP EOF处理。 */
         if (received_length < 0) {
             perror("nrecvfrom");
             break;
         }
+
         /* Echo the returned byte count, including binary and empty datagrams. */
         if (nsendto(socket_fd, receive_buffer, (size_t)received_length, 0,
                     (struct sockaddr *)&client_address, sizeof(client_address)) < 0) {
             perror("nsendto");
         }
     }
+
     nclose(socket_fd);
+
     return -1;
 }
